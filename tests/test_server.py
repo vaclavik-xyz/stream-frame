@@ -378,3 +378,45 @@ def test_sigterm_exits_promptly(tmp_path):
         if proc.poll() is None:
             proc.kill()
     assert proc.returncode in (0, -signal.SIGTERM)
+
+
+# --------------------------------------------------------------- audio
+
+
+def test_build_cmd_without_audio_has_no_extra_input():
+    cfg = vs.Config(hls_dir="/tmp/x", audio="")
+    cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(1440, 720, 0)
+    assert "pulse" not in cmd and "1:a" not in cmd
+
+
+def test_build_cmd_with_audio_adds_pulse_input_and_aac():
+    cfg = vs.Config(hls_dir="/tmp/x", audio="auto")
+    cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(1440, 720, 0, "alsa_out.monitor")
+    assert "pulse" in cmd and cmd[cmd.index("pulse") + 2] == "alsa_out.monitor"
+    assert cmd[cmd.index("-map") + 1] == "0:v"
+    assert cmd.count("-map") == 2 and "1:a" in cmd
+    assert cmd[cmd.index("-c:a") + 1] == "aac"
+    assert "128k" in cmd
+    # both slaves still get every stream: tee without an explicit select
+    assert cmd[-1].count("|") == 1 and "select=" not in cmd[-1]
+
+
+def test_resolve_audio_off_and_auto(monkeypatch):
+    assert vs.resolve_audio(vs.Config(audio="")) is None
+    assert vs.resolve_audio(vs.Config(audio="off")) is None
+
+    class R:
+        stdout = "alsa_output.pci-0000_00_1f.3.analog-stereo\n"
+
+    monkeypatch.setattr(vs.subprocess, "run", lambda *a, **k: R())
+    assert vs.resolve_audio(vs.Config(audio="auto")) == \
+        "alsa_output.pci-0000_00_1f.3.analog-stereo.monitor"
+    assert vs.resolve_audio(vs.Config(audio="my.monitor")) == "my.monitor"
+
+
+def test_resolve_audio_survives_missing_pactl(monkeypatch):
+    def boom(*a, **k):
+        raise FileNotFoundError("pactl")
+
+    monkeypatch.setattr(vs.subprocess, "run", boom)
+    assert vs.resolve_audio(vs.Config(audio="auto")) is None   # video keeps working

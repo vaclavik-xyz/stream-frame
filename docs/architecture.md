@@ -68,6 +68,10 @@ Two outputs come from a **single** encode through the `tee` muxer:
   mid-stream and a 16 s hiccup does not kill the playlist.
 * `-f rtsp` — pushed to MediaMTX on loopback, which re-serves it as RTSP and WebRTC.
 
+With `--audio`, a second input (`-f pulse -i <sink>.monitor`) is encoded as one AAC track and mapped into
+both slaves by the same `tee`, so the extra cost is ~1 % of a core, not a second encoder. AAC over RTSP is
+fine for mpv/VLC; browsers refuse AAC in WebRTC, which is why the page falls back to HLS when sound matters.
+
 `onfail=ignore` on the RTSP branch is deliberate: MediaMTX being down or restarting must never take HLS
 with it. One encoder is ~1.2 cores at 720p60; a second one would double that.
 

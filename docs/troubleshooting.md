@@ -87,6 +87,25 @@ silently drops on busy wifi) and the HLS child needs its options **inside** the 
 and ffmpeg exits immediately — and because the branch carries `onfail=ignore`, HLS may keep working
 while RTSP stays empty, which makes it look like a MediaMTX problem.
 
+## Sound is missing from the stream
+
+`--audio auto` records the monitor of the current *default sink*. Three ways that goes wrong:
+
+* **Audio goes somewhere else.** SteamOS moves the default sink when a headset connects or a game grabs
+  a device; if you picked `auto` before that happened, the monitor is silent. Pin the name instead
+  (`pactl list short sinks`, then `--audio <sink>.monitor`).
+* **Monitor source disabled.** Some configs hide monitors; `pactl list short sources | grep monitor`
+  shows nothing → `pactl load-module module-remap-source master=<sink>.monitor` or enable
+  `module-null-sink` monitoring.
+* **Browser WebRTC has no sound, HLS does.** That is expected: the audio is AAC, and browsers do not
+  play AAC inside WHEP. Use the HLS player (or mpv/VLC over RTSP) when you need the sound.
+
+Check that the segments really carry audio before blaming the player:
+
+```bash
+ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 /tmp/vrstream-hls/live5.ts
+```
+
 ## Turning on `--token`
 
 `--token` guards the HTTP side only (`/`, `/live.m3u8`, `.ts`, `/status`); `/healthz`, `/log` and `/wake`

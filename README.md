@@ -39,6 +39,9 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
 - **Self-healing on both ends.** The page watches its own clock, falls back from HLS to WebRTC when HLS
   cannot start, and beacons what happened to the server log; the daemon re-opens the capture ring when
   the compositor restarts and re-runs the encoder when MediaMTX loses the RTSP branch.
+- **Optional sound.** `--audio auto` muxes the system audio (PipeWire/Pulse monitor of the sink the
+  headset plays into) into both paths as AAC — HLS and RTSP/mpv/VLC get audio; the browser WebRTC path
+  stays video-only, because browsers do not play AAC over WHEP.
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
 - **Tests without hardware.** 26 unit tests for the ring parser, command builder, segment numbering,
   HTTP routes, Range requests and shutdown behaviour — `pytest` runs with no GPU, no ffmpeg and no shm.
@@ -85,6 +88,7 @@ curl -s http://<host>:8101/status | python3 -m json.tool
 --bitrate 4M          --fps 60          --preset ultrafast
 --hls-time 2          --hls-window 8    --idle 120
 --rtsp-url rtsp://127.0.0.1:8554/vr    ('' = HLS only)
+--audio auto                                   mux system audio as AAC (default: off)
 --token <secret>      --bind 0.0.0.0    --port 8101     -v
 ```
 
@@ -102,8 +106,9 @@ Measured latency, ring layout, lifecycle and the reasoning behind the HLS parame
 
 ## Limitations
 
-- **No audio.** The layer hooks the present queue, which carries no audio; a separate tap on the VR
-  audio sink would be needed.
+- **Audio is a separate tap.** The layer hooks the present queue, which carries no audio; `--audio`
+  records the PipeWire/Pulse sink monitor instead, so it hears whatever the machine plays, not a
+  per-application stream, and it is silent on the browser WebRTC path (AAC is not a WebRTC codec).
 - **One streamer per machine.** The ring name is fixed; a lock file stops a second daemon (two would
   fight over the playlist and the encoder).
 - **No input, no control.** Read-only by design — nothing in the stream can drive the headset.

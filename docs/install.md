@@ -86,6 +86,27 @@ systemctl --user daemon-reload
 
 By default the page is reachable by anyone who can route to the port. On a home LAN behind NAT that is
 usually what you want; on a shared or tunnelled network start it with `--token` (or `VRSTREAM_TOKEN`),
-which requires `?token=…`, `Authorization: Bearer …` or the cookie the page sets on first load.
+which requires `?token=…`, a bearer header, or the cookie the page sets on first load.
 
-There is no audio path, no input path and no control channel: the stream is read-only by construction.
+There is no input path and no control channel: the stream is read-only by construction.
+
+## Sound (optional)
+
+The layer only sees the present queue, which carries no audio, so sound comes from a second tap: the
+PipeWire/Pulse **monitor** of the sink the machine plays into. Off by default — a stream that suddenly
+requests a capture device is a worse surprise than a silent one.
+
+```bash
+pactl list short sinks                      # find the sink the headset/app plays into
+mkdir -p ~/.config/systemd/user/vrstream.service.d
+printf '[Service]\nEnvironment=VRSTREAM_AUDIO=auto\n' \
+  > ~/.config/systemd/user/vrstream.service.d/20-audio.conf
+systemctl --user daemon-reload && systemctl --user restart vrstream.service
+```
+
+`auto` means `<default sink>.monitor` and is resolved at every encoder start, so it follows the sink as
+long as the default is the right one. When the headset moves the default elsewhere, pin it instead:
+`Environment=VRSTREAM_AUDIO=<sink>.monitor`. For a manual run the same value works as `--audio`.
+
+Audio is AAC 128 kb/s stereo in both paths: HLS and RTSP (VLC/mpv) play it, the browser WebRTC path does
+not — browsers do not accept AAC over WHEP, so use HLS there.

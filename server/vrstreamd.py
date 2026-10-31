@@ -109,6 +109,7 @@ class Config:
     hls_time: int = 2
     hls_window: int = 8
     idle: float = 120.0
+    audio: str = ""                    # "" = off, "auto" = default sink monitor, or a pulse source
     rtsp_url: str | None = "rtsp://127.0.0.1:8554/vr"
     mediamtx_api: str = "http://127.0.0.1:9997"
     webrtc_url: str = ""               # shown on the page, e.g. http://host:8889/vr
@@ -318,17 +319,23 @@ class Encoder:
         self.ensure()
 
     # -- command line -------------------------------------------------------
-    def build_cmd(self, width: int, height: int, start_no: int) -> list[str]:
+    def build_cmd(self, width: int, height: int, start_no: int,
+                  audio: str | None = None) -> list[str]:
         cfg = self.cfg
         cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
                "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{width}x{height}",
                "-r", str(cfg.fps), "-i", "-"]
+        if audio:
+            # system audio (PipeWire/Pulse monitor of the sink the headset plays into)
+            cmd += ["-f", "pulse", "-i", audio]
         vf = cfg.filter_chain()
         if vf:
             cmd += ["-vf", vf]
         cmd += ["-c:v", "libx264", "-preset", cfg.preset, "-tune", "zerolatency",
                 "-maxrate", cfg.bitrate, "-bufsize", str(mem_suffix(cfg.bitrate) * 2),
                 "-g", str(max(1, cfg.fps // 2)), "-b:v", cfg.bitrate, "-pix_fmt", "yuv420p"]
+        if audio:
+            cmd += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"]
         playlist = os.path.join(cfg.hls_dir, "live.m3u8")
         hls = ["-f", "hls",
                "-hls_time", str(cfg.hls_time),
@@ -337,15 +344,16 @@ class Encoder:
                "-start_number", str(start_no),
                "-hls_flags", "delete_segments+omit_endlist+independent_segments",
                playlist]
+        maps = ["-map", "0:v"] + (["-map", "1:a"] if audio else [])
         if not cfg.rtsp_url:
-            return cmd + hls
+            return cmd + maps + hls
         # one encode, two outputs; onfail=ignore keeps HLS alive when MediaMTX is down
         opts = (f"hls_time={cfg.hls_time}:hls_list_size={cfg.hls_window}:hls_delete_threshold=4:"
                 f"start_number={start_no}:"
                 f"hls_flags=delete_segments+omit_endlist+independent_segments:"
                 f"hls_segment_filename={cfg.hls_dir}/live%d.ts")
         tee = f"[f=hls:{opts}]{playlist}|[f=rtsp:onfail=ignore:rtsp_transport=tcp]{cfg.rtsp_url}"
-        return cmd + ["-f", "tee", "-map", "0:v", tee]
+        return cmd + ["-f", "tee"] + maps + [tee]
 
     def _segment_base(self) -> int:
         """Segment numbers must keep growing across restarts, or a browser replays a cached
@@ -395,7 +403,8 @@ class Encoder:
         frame_bytes = width * height * 4
         start_no = self._segment_base()
         self._seq_no = start_no + cfg.hls_window + 2     # never reuse a number, even if files vanish
-        cmd = self.build_cmd(width, height, start_no)
+        audio = resolve_audio(cfg)
+        cmd = self.build_cmd(width, height, start_no, audio)
         if cfg.verbose:
             log("encoder:", " ".join(cmd))
         fferr = self._ffmpeg_log()
@@ -757,6 +766,31 @@ def load_page(cfg: Config) -> str:
     return "<!doctype html><video src='live.m3u8' controls autoplay playsinline></video>"
 
 
+def resolve_audio(cfg: Config) -> str | None:
+    """Turn --audio into a PulseAudio/PipeWire source name.
+
+    "auto" means the monitor of the current default sink — on SteamOS the compositor plays through
+    PipeWire, so its sink monitor carries exactly the VR audio. Any failure degrades to video-only:
+    losing the picture because the sound device moved would be the wrong trade.
+    """
+    want = (cfg.audio or "").strip()
+    if want in ("", "0", "off", "no"):
+        return None
+    if want == "auto":
+        try:
+            out = subprocess.run(["pactl", "get-default-sink"], capture_output=True,
+                                 text=True, timeout=3)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            log(f"audio: cannot ask pactl ({exc}), continuing without sound")
+            return None
+        sink = out.stdout.strip().splitlines()[0] if out.stdout.strip() else ""
+        if not sink:
+            log("audio: no default sink, continuing without sound")
+            return None
+        want = f"{sink}.monitor"
+    return want
+
+
 def mediamtx_ready(cfg: Config) -> bool | None:
     """True/False when MediaMTX answers, None when it is not there at all."""
     try:
@@ -830,6 +864,8 @@ def build_config(argv=None) -> Config:
     ap.add_argument("--hls-time", type=int, default=2)
     ap.add_argument("--hls-window", type=int, default=8)
     ap.add_argument("--idle", type=float, default=float(os.environ.get("VRSTREAM_IDLE", 120)))
+    ap.add_argument("--audio", default=os.environ.get("VRSTREAM_AUDIO", ""),
+                    help='system audio to mux in: "auto" (default sink monitor) or a pulse source name')
     ap.add_argument("--rtsp-url", default=os.environ.get("VRSTREAM_RTSP", "rtsp://127.0.0.1:8554/vr"),
                     help="extra RTSP output for MediaMTX; empty disables it")
     ap.add_argument("--mediamtx-api", default="http://127.0.0.1:9997")
