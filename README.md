@@ -119,7 +119,8 @@ curl -s http://<host>:8101/status | python3 -m json.tool
 
 Measured latency, ring layout, lifecycle and the reasoning behind the HLS parameters are in
 [docs/architecture.md](docs/architecture.md). Failures that actually happened, with causes:
-[docs/troubleshooting.md](docs/troubleshooting.md).
+[docs/troubleshooting.md](docs/troubleshooting.md). Who else shows, records and streams a headset view, and
+what this project deliberately is not: [docs/prior-art.md](docs/prior-art.md).
 
 ## Limitations
 
