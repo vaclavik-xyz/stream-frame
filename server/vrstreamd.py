@@ -61,6 +61,8 @@ LAYOUTS = {
     ),
     # left eye as presented, square
     "mono-round": "crop=720:720:0:0",
+    # already a flat, undistorted picture (SteamVR headset view, /dev/video99)
+    "passthrough": "scale=-2:720:flags=bicubic,format=yuv420p",
     # right eye, fisheye unwrapped
     "mono-flat-right": (
         "crop=720:720:720:0,"
@@ -104,6 +106,7 @@ class Config:
     preset: str = "ultrafast"
     layout: str = "mono-flat"
     vf: str | None = None              # raw ffmpeg filter override
+    source: str = "ring"               # "ring" (Vulkan layer) or "v4l2:/dev/video99"
     shm: str = "/dev/shm/vrstream_frames"
     hls_dir: str = "/tmp/vrstream-hls"
     hls_time: int = 2
@@ -116,6 +119,15 @@ class Config:
     token: str = ""
     verbose: bool = False
     page: str = field(default="")
+
+    def v4l2_device(self) -> str | None:
+        """Device path when the source is a kernel/gstreamer video node, else None."""
+        src = (self.source or "ring").strip()
+        if src.startswith("v4l2:"):
+            return src.split(":", 1)[1] or None
+        if src.startswith("/dev/video"):
+            return src
+        return None
 
     def filter_chain(self) -> str | None:
         if self.vf:
@@ -322,9 +334,15 @@ class Encoder:
     def build_cmd(self, width: int, height: int, start_no: int,
                   audio: str | None = None) -> list[str]:
         cfg = self.cfg
-        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error",
-               "-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{width}x{height}",
-               "-r", str(cfg.fps), "-i", "-"]
+        device = cfg.v4l2_device()
+        cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-nostats",
+               "-progress", self._progress_path()]
+        if device:
+            # SteamVR's own v4l2loopback node: already flat, already composed, no layer involved
+            cmd += ["-f", "v4l2", "-framerate", str(cfg.fps), "-i", device]
+        else:
+            cmd += ["-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{width}x{height}",
+                    "-r", str(cfg.fps), "-i", "-"]
         if audio:
             # system audio (PipeWire/Pulse monitor of the sink the headset plays into)
             cmd += ["-f", "pulse", "-i", audio]
@@ -354,6 +372,25 @@ class Encoder:
                 f"hls_segment_filename={cfg.hls_dir}/live%d.ts")
         tee = f"[f=hls:{opts}]{playlist}|[f=rtsp:onfail=ignore:rtsp_transport=tcp]{cfg.rtsp_url}"
         return cmd + ["-f", "tee"] + maps + [tee]
+
+    def _progress_path(self) -> str:
+        return f"/tmp/vrstreamd-progress-{self.cfg.port}.log"
+
+    def encoder_fps(self) -> float:
+        """fps reported by ffmpeg itself (-progress), good for sources we cannot sample."""
+        try:
+            with open(self._progress_path(), encoding="utf-8", errors="replace") as fh:
+                lines = fh.readlines()[-40:]
+        except OSError:
+            return 0.0
+        fps = 0.0
+        for line in lines:
+            if line.startswith("fps="):
+                try:
+                    fps = float(line.split("=", 1)[1].strip())
+                except ValueError:
+                    pass
+        return fps
 
     def _segment_base(self) -> int:
         """Segment numbers must keep growing across restarts, or a browser replays a cached
@@ -395,6 +432,9 @@ class Encoder:
     def _run_session(self) -> int:
         cfg = self.cfg
         os.makedirs(cfg.hls_dir, exist_ok=True)
+        device = cfg.v4l2_device()
+        if device:
+            return self._run_device(device)
         if not self.ring.open():
             self.last_error = f"ring not available: {cfg.shm}"
             time.sleep(2)
@@ -416,6 +456,45 @@ class Encoder:
         log(f"encoder started (layout={cfg.layout}, {width}x{height}, {cfg.bitrate})")
         try:
             return self._feed(proc, frame_bytes)
+        finally:
+            with self._lock:
+                self._proc = None
+            if fferr is not subprocess.DEVNULL:
+                fferr.close()
+
+    def _run_device(self, device: str) -> int:
+        """ffmpeg reads the video node itself: no ring, no feeder, no raw frames in Python."""
+        cfg = self.cfg
+        if not os.path.exists(device):
+            self.last_error = f"source device missing: {device}"
+            time.sleep(2)
+            return -1
+        start_no = self._segment_base()
+        self._seq_no = start_no + cfg.hls_window + 2
+        audio = resolve_audio(cfg)
+        cmd = self.build_cmd(0, 0, start_no, audio)
+        if cfg.verbose:
+            log("encoder:", " ".join(cmd))
+        fferr = self._ffmpeg_log()
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stderr=fferr)
+        with self._lock:
+            self._proc = proc
+        self.sessions += 1
+        self.started_at = time.time()
+        log(f"encoder started (source={device}, layout={cfg.layout}, {cfg.bitrate})")
+        try:
+            while proc.poll() is None:
+                if self._shutdown.is_set() or not self._want.is_set():
+                    proc.terminate()
+                    break
+                time.sleep(0.2)
+            try:
+                rc = proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                rc = -1
+            log(f"encoder stopped (rc={rc})")
+            return rc if rc is not None else -1
         finally:
             with self._lock:
                 self._proc = None
@@ -519,6 +598,8 @@ class Encoder:
 
     def status(self) -> dict:
         return {
+            "source": self.cfg.v4l2_device() or "ring",
+            "enc_fps": round(self.encoder_fps(), 1) if self.alive() else 0.0,
             "encoder": self.alive(),
             "restarts": self.restarts,
             "sessions": self.sessions,
@@ -687,7 +768,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.enc.ensure()
 
         if path == "/status":
-            self._json({"fps": round(self.ring.fps(), 1), **self.enc.status()}, head=head)
+            # in ring mode capture fps is sampled from the ring; a device is measured by ffmpeg
+            fps = self.enc.encoder_fps() if self.cfg.v4l2_device() else self.ring.fps()
+            self._json({"fps": round(fps, 1), **self.enc.status()}, head=head)
             return
         if path in ("/", "/index.html"):
             self._page(head)
@@ -857,7 +940,12 @@ def build_config(argv=None) -> Config:
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--bitrate", default="4M")
     ap.add_argument("--preset", default="ultrafast")
-    ap.add_argument("--layout", default="mono-flat", choices=sorted(LAYOUTS))
+    ap.add_argument("--layout", default=None, choices=sorted(LAYOUTS),
+                    help="mono-flat (default for the ring), passthrough (default for a device), "
+                         "mono-round, stereo, mono-flat-right")
+    ap.add_argument("--source", default=os.environ.get("VRSTREAM_SOURCE", "ring"),
+                    help='"ring" = Vulkan layer shm (default), "v4l2:/dev/video99" = SteamVR '
+                         'headset view, no layer needed')
     ap.add_argument("--vf", default=None, help="raw ffmpeg filter chain (overrides --layout)")
     ap.add_argument("--shm", default=os.environ.get("VRSTREAM_CAP_SHM", "/dev/shm/vrstream_frames"))
     ap.add_argument("--hls-dir", default=os.environ.get("VRSTREAM_HLS", "/tmp/vrstream-hls"))
@@ -876,6 +964,11 @@ def build_config(argv=None) -> Config:
 
     mem_suffix(a.bitrate)                      # fail fast on a bad bitrate
     cfg = Config(**{k: v for k, v in vars(a).items() if k in Config.__dataclass_fields__})
+    if cfg.source not in ("ring", "") and not cfg.v4l2_device():
+        raise SystemExit(f"--source must be 'ring' or 'v4l2:<device>', got {cfg.source!r}")
+    if cfg.layout is None:
+        # a device already delivers a flat, composed picture; the ring needs the fisheye unwarp
+        cfg.layout = "passthrough" if cfg.v4l2_device() else "mono-flat"
     cfg.filter_chain()                         # fail fast on a bad layout/filter
     cfg.page = load_page(cfg)
     return cfg

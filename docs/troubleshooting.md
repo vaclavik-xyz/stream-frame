@@ -106,6 +106,21 @@ Check that the segments really carry audio before blaming the player:
 ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 /tmp/vrstream-hls/live5.ts
 ```
 
+## `--source v4l2:/dev/video99` sees nothing
+
+The node is created by SteamVR's own `steamvr-v4l2cam.service` and exists only while it runs:
+
+```bash
+systemctl --user status steamvr-v4l2cam
+v4l2-ctl --list-devices
+ffmpeg -f v4l2 -i /dev/video99 -frames:v 1 /tmp/vr.jpg
+```
+
+Useful to know: the first frame read can be black, so the first HLS segment may be dark — that is the
+device, not the encoder. And this source is the *composited* headset view (one flat image, 1920×1080), so
+`--layout mono-flat` would crop and unwarp something that is already correct; the daemon therefore defaults
+to `passthrough` in this mode.
+
 ## Turning on `--token`
 
 `--token` guards the HTTP side only (`/`, `/live.m3u8`, `.ts`, `/status`); `/healthz`, `/log` and `/wake`

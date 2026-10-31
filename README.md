@@ -29,7 +29,8 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
 
 ## Features
 
-- **No app, no capture card, no driver patch.** One implicit Vulkan layer + one Python file.
+- **No app, no capture card, no driver patch.** One implicit Vulkan layer + one Python file — or, if you
+  do not want to install anything, `--source v4l2:/dev/video99` reads SteamVR's own headset view instead.
 - **On demand.** Nothing is encoded while nobody watches; the first HTTP request starts ffmpeg,
   120 s of silence stops it. Connecting over RTSP wakes it through `runOnDemand`.
 - **Supervised encoder.** ffmpeg dying is a two-second freeze, not a dead stream: automatic restart,
@@ -46,6 +47,21 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
 - **Tests without hardware.** 26 unit tests for the ring parser, command builder, segment numbering,
   HTTP routes, Range requests and shutdown behaviour — `pytest` runs with no GPU, no ffmpeg and no shm.
 - Audio: not yet. See [Limitations](#limitations).
+
+## Two sources: full quality, or no installation at all
+
+The Vulkan layer is the high-quality path (1440 px per eye, stereo or one eye unwarped). SteamVR on Linux
+also publishes its own headset view into a `v4l2loopback` node — `steamvr-v4l2cam.service` writing
+`/dev/video99` (1920×1080, flat, ~70 fps) — so the same daemon can run **with no layer, no compositor
+restart and nothing to uninstall**:
+
+```bash
+python3 server/vrstreamd.py --source v4l2:/dev/video99      # layout defaults to passthrough
+```
+
+Cost of that convenience: 960×1080 per eye instead of 1440×1440, and you get exactly the composed image
+SteamVR already mirrors (which is what you want on a TV anyway). Test it first with
+`ffmpeg -f v4l2 -i /dev/video99 -frames:v 1 /tmp/vr.jpg`.
 
 ## Quick start
 
@@ -89,6 +105,7 @@ curl -s http://<host>:8101/status | python3 -m json.tool
 --hls-time 2          --hls-window 8    --idle 120
 --rtsp-url rtsp://127.0.0.1:8554/vr    ('' = HLS only)
 --audio auto                                   mux system audio as AAC (default: off)
+--source ring|v4l2:/dev/video99                capture from the layer or from a video node
 --token <secret>      --bind 0.0.0.0    --port 8101     -v
 ```
 

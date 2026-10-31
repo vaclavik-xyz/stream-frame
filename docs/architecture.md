@@ -56,6 +56,19 @@ The layer does the copy on the GPU (`vkCmdBlitImage` into a `LINEAR` image, then
 host-visible memory) and paces itself with a fence, so a slow reader costs dropped frames, not stalls.
 Roughly 1.5 % of compositor frame time at 1440×1440.
 
+## Source modes
+
+* `--source ring` (default) — the Vulkan layer's shared-memory ring: 1440×1440 per eye, BGRA, the only
+  mode that gives full resolution, and the only one that needs the layer installed and the compositor
+  restarted once.
+* `--source v4l2:/dev/video99` — SteamVR's `steamvr-v4l2cam` service copies the composited headset view
+  into a v4l2loopback node; ffmpeg opens it directly, so there is no feeder thread, no shm parsing and
+  nothing to install. Half the per-eye resolution (960×1080), already flat, and it exists only while
+  SteamVR runs.
+
+The daemon behaves the same in both modes (on demand, supervised, idle stop, tee to HLS + RTSP); only the
+`fps` metric comes from a different place — sampled from the ring, or read from ffmpeg's `-progress` file.
+
 ## Encoder
 
 `ffmpeg` is fed raw BGRA on stdin at a fixed 60 fps: the newest ring frame is re-sent if the compositor

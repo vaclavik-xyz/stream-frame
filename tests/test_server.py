@@ -420,3 +420,66 @@ def test_resolve_audio_survives_missing_pactl(monkeypatch):
 
     monkeypatch.setattr(vs.subprocess, "run", boom)
     assert vs.resolve_audio(vs.Config(audio="auto")) is None   # video keeps working
+
+
+# --------------------------------------------------------------- device source
+
+
+def test_source_config_and_layout_defaults():
+    cfg = vs.build_config(["--source", "v4l2:/dev/video99", "--rtsp-url", ""])
+    assert cfg.v4l2_device() == "/dev/video99"
+    assert cfg.layout == "passthrough"        # a device is already flat; no fisheye unwarp
+    cfg = vs.build_config(["--rtsp-url", ""])
+    assert cfg.v4l2_device() is None and cfg.layout == "mono-flat"
+
+
+def test_source_rejects_nonsense():
+    with pytest.raises(SystemExit):
+        vs.build_config(["--source", "hdmi0", "--rtsp-url", ""])
+
+
+def test_build_cmd_for_device_has_no_rawvideo():
+    cfg = vs.Config(hls_dir="/tmp/x", source="v4l2:/dev/video99", layout="passthrough",
+                    rtsp_url="")
+    cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(0, 0, 3)
+    assert "v4l2" in cmd and "/dev/video99" in cmd
+    assert "rawvideo" not in cmd and "bgra" not in cmd
+    assert cmd[cmd.index("-start_number") + 1] == "3"
+    assert "scale=-2:720" in cmd[cmd.index("-vf") + 1]
+
+    cfg.rtsp_url = "rtsp://127.0.0.1:8554/vr"
+    tee_cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(0, 0, 3)
+    assert "tee" in tee_cmd and "start_number=3" in tee_cmd[-1]
+    assert "rawvideo" not in tee_cmd
+
+
+def test_device_session_starts_and_stops(tmp_path, monkeypatch):
+    dev = tmp_path / "video99"
+    dev.write_bytes(b"")
+    cfg = vs.Config(hls_dir=str(tmp_path / "hls"), source=f"v4l2:{dev}", layout="passthrough")
+    enc = vs.Encoder(cfg, vs.FrameRing("/nonexistent"))
+    monkeypatch.setattr(enc, "build_cmd",
+                        lambda *a, **k: [sys.executable, "-c", "import time; time.sleep(60)"])
+    enc.ensure()
+    for _ in range(50):
+        time.sleep(0.1)
+        if enc.alive():
+            break
+    assert enc.alive() and enc.sessions == 1
+    t0 = time.time()
+    enc.stop(wait=5)
+    assert time.time() - t0 < 6 and not enc.alive()
+    enc.shutdown()
+
+
+def test_device_session_reports_missing_node(tmp_path, monkeypatch):
+    cfg = vs.Config(hls_dir=str(tmp_path), source="v4l2:" + str(tmp_path / "nope"),
+                    layout="passthrough")
+    enc = vs.Encoder(cfg, vs.FrameRing("/nonexistent"))
+    enc.ensure()
+    for _ in range(40):
+        time.sleep(0.1)
+        if enc.last_error:
+            break
+    assert "source device missing" in enc.last_error
+    enc.shutdown()

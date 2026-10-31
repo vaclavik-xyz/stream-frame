@@ -35,9 +35,9 @@ for _ in $(seq 1 30); do
 done
 
 if [[ -n "${fps:-}" ]] && awk -v f="$fps" 'BEGIN{exit !(f>1)}'; then
-  ok "capture ring delivers frames (${fps} fps)"
+  ok "capture delivers frames (${fps} fps)"
 else
-  bad "no frames in the shared-memory ring — is the headset being worn / a VR app running?"
+  bad "no frames from the source — is the headset being worn / SteamVR running?"
 fi
 
 if [[ "$(printf '%s' "$status" | json encoder)" == "True" ]]; then

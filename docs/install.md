@@ -90,6 +90,21 @@ which requires `?token=…`, a bearer header, or the cookie the page sets on fir
 
 There is no input path and no control channel: the stream is read-only by construction.
 
+## Without the Vulkan layer
+
+If you would rather not install a layer, point the daemon at SteamVR's own headset-view node — no restart,
+nothing to uninstall, half the per-eye resolution:
+
+```bash
+mkdir -p ~/.config/systemd/user/vrstream.service.d
+printf '[Service]\nEnvironment=VRSTREAM_SOURCE=v4l2:/dev/video99\n' \
+  > ~/.config/systemd/user/vrstream.service.d/20-source.conf
+systemctl --user daemon-reload && systemctl --user restart vrstream.service
+```
+
+Skip `scripts/install.sh`'s layer registration in that case; only the daemon, ffmpeg and (optionally)
+MediaMTX are needed.
+
 ## Sound (optional)
 
 The layer only sees the present queue, which carries no audio, so sound comes from a second tap: the
