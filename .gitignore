@@ -1,0 +1,14 @@
+build/
+*.so
+*.o
+*.pyc
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.log
+*.ts
+*.m3u8
+hls/
+.DS_Store
+.venv/
+venv/

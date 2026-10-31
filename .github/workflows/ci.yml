@@ -1,0 +1,69 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install --upgrade pip pytest ruff
+      - name: lint
+        run: ruff check server tests
+      - name: tests
+        run: python -m pytest -q tests
+
+  layer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: install vulkan headers
+        run: sudo apt-get update && sudo apt-get install -y libvulkan-dev
+      - name: build layer
+        run: make layer
+      - name: layer exports the entrypoints the loader looks for
+        run: |
+          nm -D --defined-only build/libvrcap.so | grep -q cap_NegotiateLoaderLayerInterfaceVersion
+          nm -D --defined-only build/libvrcap.so | grep -q cap_QueuePresentKHR
+          nm -D --defined-only build/libvrcap.so | grep -q cap_GetInstanceProcAddr
+
+  smoke:
+    # no GPU and no ffmpeg here: this would have caught the SIGTERM deadlock and the
+    # "/healthz answers but the process never exits" class of bug
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: shell syntax
+        run: for f in scripts/*.sh; do bash -n "$f" || exit 1; done
+      - name: daemon starts, answers and stops promptly
+        run: |
+          set -x
+          python3 server/vrstreamd.py --port 8123 --bind 127.0.0.1 --rtsp-url "" \
+            --shm /tmp/none.bin --hls-dir /tmp/hls-ci &
+          PID=$!
+          for _ in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:8123/healthz && break
+            sleep 0.25
+          done
+          curl -fsS http://127.0.0.1:8123/healthz
+          curl -fsS http://127.0.0.1:8123/status
+          t0=$(date +%s%N)
+          kill -TERM "$PID"
+          wait "$PID" || true
+          t1=$(date +%s%N)
+          ms=$(( (t1 - t0) / 1000000 ))
+          echo "stopped in ${ms} ms"
+          test "$ms" -lt 8000

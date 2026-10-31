@@ -1,0 +1,15 @@
+[Unit]
+Description=MediaMTX — RTSP/WebRTC server for vrstream
+After=network-online.target vrstream.service
+Wants=network-online.target
+PartOf=vrstream.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/vrstream
+ExecStart=%h/vrstream/bin/mediamtx %h/vrstream/config/mediamtx.yml
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

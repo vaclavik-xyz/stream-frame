@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0b0f">
+<title>vrstream — live VR view</title>
+<style>
+  :root { color-scheme: dark; --fg:#e8e8ef; --dim:#8a8a98; --accent:#6ee7b7; }
+  * { box-sizing: border-box; }
+  html,body { margin:0; height:100%; background:#0b0b0f; color:var(--fg);
+              font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
+  video { position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
+  #msg { position:fixed; left:0; right:0; bottom:calc(18px + env(safe-area-inset-bottom));
+         text-align:center; font-size:14px; color:var(--dim); pointer-events:none; }
+  #hud { position:fixed; left:12px; top:calc(12px + env(safe-area-inset-top)); padding:8px 12px;
+         border-radius:10px; background:rgba(10,10,14,.62); backdrop-filter:blur(8px);
+         font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim);
+         opacity:0; transition:opacity .25s; pointer-events:none; white-space:pre; }
+  #hud.on { opacity:1; }
+  #hud b { color:var(--accent); font-weight:600; }
+  #bar { position:fixed; right:12px; top:calc(12px + env(safe-area-inset-top)); display:flex; gap:8px; }
+  #bar button { font:12px/1 inherit; color:var(--fg); background:rgba(10,10,14,.62);
+         border:1px solid rgba(255,255,255,.14); border-radius:9px; padding:8px 11px; cursor:pointer;
+         backdrop-filter:blur(8px); }
+  #bar button:hover { border-color:var(--accent); color:var(--accent); }
+  body.clean #bar, body.clean #hud, body.clean #msg { display:none; }
+</style>
+</head>
+<body>
+<video id="v" playsinline autoplay muted controls></video>
+<div id="msg">connecting…</div>
+<div id="hud"></div>
+<div id="bar">
+  <button id="mode" title="switch transport">webrtc</button>
+  <button id="stats" title="toggle stats (t)">stats</button>
+  <button id="fs" title="fullscreen (f)">⤢</button>
+</div>
+<script>
+(function () {
+  "use strict";
+  const TOKEN = "__TOKEN__";
+  const LAYOUT = "__LAYOUT__";
+  // explicit --webrtc-url wins, otherwise assume MediaMTX sits on the same host
+  const WHEP = ("__WEBRTC__" || (location.protocol + "//" + location.hostname + ":8889/vr"))
+               .replace(/\/+$/, "") + "/whep";
+
+  const v = document.getElementById("v");
+  const msg = document.getElementById("msg");
+  const hud = document.getElementById("hud");
+  const modeBtn = document.getElementById("mode");
+  const qs = (s) => (TOKEN ? s + (s.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN) : s);
+
+  const wantHls = location.hash.includes("hls") || new URLSearchParams(location.search).has("hls");
+  const isApple = /iPad|iPhone|iPod/.test(navigator.userAgent);
+  let mode = wantHls || isApple || !window.RTCPeerConnection ? "hls" : "webrtc";
+
+  let lastTime = -1, lastMove = Date.now(), restarts = 0, restarting = false;
+  let status = null, pc = null, whepUrl = null, lastBytes = 0, kbps = 0;
+
+  const say = (text) => { if (msg.textContent !== text) msg.textContent = text; };
+  const beacon = (text) => { try { fetch(qs("log?e=" + encodeURIComponent(mode + " " + text))); } catch (e) {} };
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // ---------------------------------------------------------------- HLS
+  function attachHls() {
+    restarting = false;
+    v.srcObject = null;
+    v.src = qs("live.m3u8?t=" + Date.now());
+    lastMove = Date.now(); lastTime = -1;
+    const p = v.play();
+    if (p && p.catch) p.catch(() => say("tap the video to start"));
+  }
+
+  function restartHls(why) {
+    if (restarting) return;
+    restarting = true; restarts++;
+    if (restarts >= 2 && !wantHls && window.RTCPeerConnection) {
+      beacon("hls keeps failing — switching to webrtc");
+      setMode("webrtc");
+      return;
+    }
+    say("reconnecting (" + why + ")…");
+    beacon(why + " restarts=" + restarts);
+    try { v.pause(); } catch (e) {}
+    v.removeAttribute("src"); v.load();
+    setTimeout(attachHls, 400 + Math.min(restarts * 300, 2500));
+  }
+
+  // ---------------------------------------------------------------- WebRTC (WHEP)
+  async function startWhep() {
+    say("connecting (webrtc)…");
+    pc = new RTCPeerConnection({ iceServers: [] });
+    pc.addTransceiver("video", { direction: "recvonly" });
+    pc.addTransceiver("audio", { direction: "recvonly" });
+    pc.ontrack = (ev) => {
+      if (ev.streams && ev.streams[0]) v.srcObject = ev.streams[0];
+      v.play().catch(() => say("tap the video to start"));
+      restarts = 0;
+    };
+    pc.onconnectionstatechange = () => {
+      if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+        beacon("pc " + pc.connectionState);
+        teardown(); setTimeout(() => (mode === "webrtc" ? startWhep().catch(fallbackHls) : null), 1500);
+      }
+    };
+
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    await new Promise((res) => {                 // non-trickle: wait for candidates
+      if (pc.iceGatheringState === "complete") return res();
+      const done = () => pc.iceGatheringState === "complete" && res();
+      pc.addEventListener("icegatheringstatechange", done);
+      setTimeout(res, 2500);
+    });
+
+    const res = await fetch(WHEP, {
+      method: "POST",
+      headers: { "Content-Type": "application/sdp" },
+      body: pc.localDescription.sdp,
+    });
+    if (!res.ok) throw new Error("whep " + res.status);
+    whepUrl = res.headers.get("Location") || null;
+    await pc.setRemoteDescription({ type: "answer", sdp: await res.text() });
+    say("");
+  }
+
+  function teardown() {
+    if (pc) { try { pc.close(); } catch (e) {} pc = null; }
+    if (whepUrl) { try { fetch(new URL(whepUrl, WHEP).href, { method: "DELETE" }); } catch (e) {} whepUrl = null; }
+    v.srcObject = null;
+  }
+
+  function fallbackHls(err) {
+    beacon("webrtc failed: " + (err && err.message));
+    mode = "hls"; syncModeButton();
+    say("webrtc unavailable — using HLS");
+    attachHls();
+  }
+
+  function startWebrtc() {
+    startWhep().catch(fallbackHls);
+  }
+
+  // ---------------------------------------------------------------- mode
+  function syncModeButton() { modeBtn.textContent = mode === "hls" ? "hls" : "webrtc"; }
+
+  function setMode(next) {
+    if (next === mode) return;
+    teardown();
+    try { v.pause(); } catch (e) {}
+    v.removeAttribute("src"); v.load();
+    mode = next; syncModeButton(); restarts = 0;
+    if (mode === "hls") attachHls(); else startWebrtc();
+  }
+
+  modeBtn.onclick = () => setMode(mode === "hls" ? "webrtc" : "hls");
+
+  // ---------------------------------------------------------------- events
+  v.addEventListener("error", () => {
+    if (mode !== "hls") return;
+    const e = v.error;
+    beacon("error " + ((e && e.code) || "?") + ":" + ((e && e.message) || ""));
+    restartHls("player error");
+  });
+  v.addEventListener("stalled", () => { if (mode === "hls") beacon("stalled t=" + v.currentTime.toFixed(1)); });
+  v.addEventListener("waiting", () => { if (mode === "hls") beacon("waiting t=" + v.currentTime.toFixed(1)); });
+  v.addEventListener("playing", () => { restarts = 0; lastMove = Date.now(); say(""); });
+
+  if (mode === "hls") attachHls(); else startWebrtc();
+  syncModeButton();
+
+  // a frozen HTTP stream does not always fire an error - watch the clock
+  setInterval(() => {
+    if (mode !== "hls" || v.paused || v.ended) return;
+    if (v.currentTime !== lastTime) { lastTime = v.currentTime; lastMove = Date.now(); return; }
+    if (lastTime > 0.5 && Date.now() - lastMove > 5000) restartHls("frozen");
+  }, 1000);
+
+  // status polling doubles as the keep-alive for the on-demand encoder
+  setInterval(() => {
+    fetch(qs("status?t=" + Date.now())).then((r) => r.json()).then((j) => {
+      status = j;
+      if (j.fps < 5) say("VR is not rendering — put the headset on or start a game");
+      else if (v.currentTime > 0 || (pc && pc.connectionState === "connected")) say("");
+      renderHud();
+    }).catch(() => {});
+  }, 3000);
+
+  function renderHud() {
+    if (!hud.classList.contains("on") || !status) return;
+    let transport;
+    if (mode === "hls") {
+      const buffered = v.buffered.length ? (v.buffered.end(v.buffered.length - 1) - v.currentTime) : 0;
+      transport = "hls   buffer " + buffered.toFixed(1) + " s\n";
+    } else {
+      transport = "webrtc  " + (pc ? pc.connectionState : "off") + "\n";
+    }
+    hud.innerHTML =
+      "capture   <b>" + status.fps.toFixed(1) + "</b> fps\n" +
+      "encoder   " + (status.encoder ? "<b>on</b>" : "off") + "  " + (status.bitrate || "") + "  " + LAYOUT + "\n" +
+      transport +
+      "restarts  " + status.restarts + "  (player " + restarts + ")\n" +
+      "viewers   " + status.readers;
+  }
+
+  document.getElementById("stats").onclick = () => { hud.classList.toggle("on"); renderHud(); };
+  document.getElementById("fs").onclick = () => {
+    if (document.fullscreenElement) document.exitFullscreen();
+    else document.documentElement.requestFullscreen().catch(() => {});
+  };
+
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "t") { hud.classList.toggle("on"); renderHud(); }
+    if (e.key === "f") document.getElementById("fs").click();
+    if (e.key === "m") modeBtn.click();
+    if (e.key === "c") document.body.classList.toggle("clean");
+  });
+})();
+</script>
+</body>
+</html>
