@@ -1232,6 +1232,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/qr.js":                      # a <script src> carries no token, and the file is public
             self._asset(os.path.join(HERE, "web", "qr.js"), "application/javascript", head)
             return
+        if path in ("/favicon.ico", "/icon.svg", "/apple-touch-icon.png"):
+            # Browsers and iOS ask for these on their own, without a token. They are art,
+            # not stream data, so they are served like qr.js — public, cached for a day.
+            ctype = {"favicon.ico": "image/x-icon", "icon.svg": "image/svg+xml",
+                     "apple-touch-icon.png": "image/png"}[path.lstrip("/")]
+            self._asset(os.path.join(HERE, "web", path.lstrip("/")), ctype, head, max_age=86400)
+            return
         if path == "/wake":                       # MediaMTX runOnDemand target, no token needed
             self.enc.ensure()
             LAST_REQUEST = time.time()

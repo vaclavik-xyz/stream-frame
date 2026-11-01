@@ -1,5 +1,7 @@
 # Stream Frame
 
+<img src="docs/img/brand/logo.png" alt="stream-frame" width="520">
+
 **Watch what your headset sees — on any screen, without a capture card.**
 
 [![ci](https://github.com/vaclavik-xyz/stream-frame/actions/workflows/ci.yml/badge.svg)](https://github.com/vaclavik-xyz/stream-frame/actions/workflows/ci.yml)

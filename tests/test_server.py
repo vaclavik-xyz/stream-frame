@@ -911,6 +911,23 @@ def test_qr_encoder_is_served_without_a_token(server):
     assert get(base + "/qr.js", method="HEAD")[1] == b""
 
 
+def test_favicon_and_touch_icon_are_served_without_a_token(server):
+    """Browsers and iOS fetch these unprompted; a 401 there is a broken tab icon."""
+    base, cfg, _ = server
+    cfg.token = "s3cret"
+    code, body, headers = get(base + "/favicon.ico")
+    assert code == 200 and body[:4] == b"\x00\x00\x01\x00"      # ICO magic
+    assert headers["Content-Type"] == "image/x-icon"
+    assert headers["Cache-Control"].startswith("public")
+    code, body, headers = get(base + "/icon.svg")
+    assert code == 200 and b"<svg" in body[:200]
+    assert headers["Content-Type"] == "image/svg+xml"
+    code, body, headers = get(base + "/apple-touch-icon.png")
+    assert code == 200 and body[:8] == b"\x89PNG\r\n\x1a\n"
+    assert headers["Content-Type"] == "image/png"
+    assert get(base + "/favicon.ico", method="HEAD")[1] == b""
+
+
 def test_settings_reject_a_value_that_would_break_the_picture(server):
     base, cfg, _ = server
     code, body = post(base + "/api/settings", {"bitrate": "150k"})

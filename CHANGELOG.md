@@ -4,6 +4,14 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- Brand mark, app icon, favicon and a 1200×630 social preview (`docs/img/brand/`). The mark is one
+  continuous ribbon around the visor rim — vector, so it holds from 16 px to print.
+- `/favicon.ico`, `/icon.svg` and `/apple-touch-icon.png` are served without a token, like `qr.js`:
+  browsers and iOS request them unprompted, and a 401 there just leaves a blank tab icon.
+
 ## [0.1.0] - 2026-11-01
 
 First release. The tool does what it was written to do: a headset's picture and
