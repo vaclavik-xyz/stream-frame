@@ -6,6 +6,11 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+- The capture layer read its on/off flag from `VRSTREAM_CAP_` — suffix concatenation on an empty
+  suffix — so a unit exporting `VRSTREAM_CAP=1` was silently `capture=off`: no ring, no picture,
+  no error. The bare name is now read as the bare name.
+
 ### Added
 - Brand mark, app icon, favicon and a 1200×630 social preview (`docs/img/brand/`). The mark is one
   continuous ribbon around the visor rim — vector, so it holds from 16 px to print.

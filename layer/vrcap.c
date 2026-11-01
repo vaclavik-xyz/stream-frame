@@ -118,13 +118,17 @@ static double now_s(void) {
 }
 
 /* STREAMFRAME_CAP_<suffix> first, then the old VRSTREAM_CAP_<suffix>: the layer is loaded by the
- * compositor at startup, so a unit that still says VRSTREAM_CAP must keep working across the rename. */
+ * compositor at startup, so a unit that still says VRSTREAM_CAP must keep working across the rename.
+ * An empty suffix is the on/off flag itself, so it takes the bare name — appending the underscore
+ * asks for VRSTREAM_CAP_ and quietly reads capture=off no matter what the unit exports. */
 static const char *cap_env(const char *suffix) {
     static char buf[64];
-    snprintf(buf, sizeof buf, "STREAMFRAME_CAP_%s", suffix);
+    if (suffix[0]) snprintf(buf, sizeof buf, "STREAMFRAME_CAP_%s", suffix);
+    else           snprintf(buf, sizeof buf, "STREAMFRAME_CAP");
     const char *v = getenv(buf);
     if (v) return v;
-    snprintf(buf, sizeof buf, "VRSTREAM_CAP_%s", suffix);
+    if (suffix[0]) snprintf(buf, sizeof buf, "VRSTREAM_CAP_%s", suffix);
+    else           snprintf(buf, sizeof buf, "VRSTREAM_CAP");
     return getenv(buf);
 }
 
