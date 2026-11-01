@@ -248,3 +248,39 @@ class EyeSource:
             "age": age,
             "error": self.error,
         }
+
+
+def _main(argv: list[str]) -> int:
+    """`python3 gaze.py [path] [seconds]` — print every new estimate; the first thing to run on a headset."""
+    path = argv[1] if len(argv) > 1 else "/dev/shm/eye-server.mmap"
+    seconds = float(argv[2]) if len(argv) > 2 else 30.0
+    src = EyeSource(path)
+    if not src.start():
+        print(f"cannot read {path}: {src.error}")
+        return 1
+    print(f"reading {path} (abi {src.version}); move your eyes, Ctrl-C to stop")
+    deadline, seen, last = time.time() + seconds, 0, None
+    try:
+        while time.time() < deadline:
+            sample = src.latest()
+            if sample is not None and sample["sample_time"] != last:
+                last = sample["sample_time"]
+                seen += 1
+                print(f"{sample['yaw']:7.2f} {sample['pitch']:7.2f}  "
+                      f"L {sample['yaw_l']:7.2f} {sample['pitch_l']:7.2f}  "
+                      f"R {sample['yaw_r']:7.2f} {sample['pitch_r']:7.2f}  "
+                      f"lids {sample['open_l']:.2f} {sample['open_r']:.2f}")
+            time.sleep(0.05)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        src.stop()
+    info = src.info()
+    print(f"{seen} new estimates, {info['rate']} Hz, {info['torn_reads']} torn reads")
+    return 0 if seen else 2
+
+
+if __name__ == "__main__":
+    import sys
+
+    raise SystemExit(_main(sys.argv))

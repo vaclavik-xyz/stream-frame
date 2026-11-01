@@ -77,6 +77,16 @@ recording of what the eye looked like, this is not the door.
 
 ## Checking it on a headset
 
+Start with the probe — it needs nothing but Python and the running runtime, so it tells you whether the
+layout guess is right before the daemon is in the picture:
+
+```bash
+python3 server/gaze.py                   # prints one line per new estimate, 30 s
+python3 server/gaze.py /dev/shm/eye-server.mmap 60
+```
+
+Then the daemon:
+
 ```bash
 ls -l /dev/shm/eye-server.mmap          # exists while the runtime is up
 systemctl --user status vrstream         # look for "gaze: reading … (abi 4)"
