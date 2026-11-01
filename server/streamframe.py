@@ -58,23 +58,30 @@ RTSP_PATH = "vr"
 # layout presets: what the compositor presents -> what a TV wants to see
 BEACON_MAX_BYTES = 1 << 20        # rotate the client telemetry log at 1 MiB
 BEACON_LOG = "/tmp/streamframe-client.log"
+# Each eye is half of the captured frame, so the crop follows the capture width
+# instead of assuming a 1440-wide (2x720) buffer. Capturing wider is then a pure
+# env change on the layer side: sharpness is decided by how many pixels the warp
+# gets to read, not by the output size.
+EYE_FOV = "input=fisheye:output=flat:ih_fov=180:iv_fov=180:h_fov=110:v_fov=75"
+OUT_W, OUT_H = 1280, 720
+
 LAYOUTS = {
     # two lens-warped eyes side by side, untouched
     "stereo": None,
     # left eye, fisheye unwrapped to a flat 16:9 picture
     "mono-flat": (
-        "crop=720:720:0:0,"
-        "v360=input=fisheye:output=flat:ih_fov=180:iv_fov=180:h_fov=110:v_fov=75:w=1280:h=720,"
+        "crop={eye}:{eye}:0:0,"
+        f"v360={EYE_FOV}:w={OUT_W}:h={OUT_H},"
         "format=yuv420p"
     ),
     # left eye as presented, square
-    "mono-round": "crop=720:720:0:0",
+    "mono-round": "crop={eye}:{eye}:0:0",
     # already a flat, undistorted picture (SteamVR headset view, /dev/video99)
-    "passthrough": "scale=-2:720:flags=bicubic,format=yuv420p",
+    "passthrough": f"scale=-2:{OUT_H}:flags=bicubic,format=yuv420p",
     # right eye, fisheye unwrapped
     "mono-flat-right": (
-        "crop=720:720:720:0,"
-        "v360=input=fisheye:output=flat:ih_fov=180:iv_fov=180:h_fov=110:v_fov=75:w=1280:h=720,"
+        "crop={eye}:{eye}:{eye}:0,"
+        f"v360={EYE_FOV}:w={OUT_W}:h={OUT_H},"
         "format=yuv420p"
     ),
 }
@@ -243,13 +250,18 @@ class Config:
         except ValueError:
             return 100.0, 90.0
 
-    def filter_chain(self) -> str | None:
+    def filter_chain(self, width: int = 0) -> str | None:
         if self.vf:
             return self.vf
         if self.layout not in LAYOUTS:
             raise ValueError(f"unknown layout {self.layout!r} "
                              f"(pick one of {', '.join(sorted(LAYOUTS))})")
-        return LAYOUTS[self.layout]
+        chain = LAYOUTS[self.layout]
+        if chain is None:
+            return None
+        # even widths keep the two eyes the same size for ffmpeg's crop
+        eye = max(1, (width or 1440) // 2) & ~1
+        return chain.format(eye=eye)
 
 
 # ----------------------------------------------------------------------------- ring buffer
@@ -494,7 +506,7 @@ class Encoder:
         if audio:
             # system audio (PipeWire/Pulse monitor of the sink the headset plays into)
             cmd += ["-f", "pulse", "-i", audio]
-        vf = cfg.filter_chain()
+        vf = cfg.filter_chain(width)
         if vf:
             cmd += ["-vf", vf]
         if cfg.threads:

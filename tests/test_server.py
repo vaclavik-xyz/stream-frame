@@ -66,7 +66,10 @@ def test_mem_suffix_rejects_garbage_and_ambiguity():
 
 
 def test_layout_presets():
-    assert vs.Config(layout="mono-flat").filter_chain().startswith("crop=720:720:0:0")
+    # the crop follows the captured frame: one eye is half of it
+    assert vs.Config(layout="mono-flat").filter_chain(1440).startswith("crop=720:720:0:0")
+    assert vs.Config(layout="mono-flat").filter_chain(2400).startswith("crop=1200:1200:0:0")
+    assert vs.Config(layout="mono-flat-right").filter_chain(2400).startswith("crop=1200:1200:1200:0")
     assert vs.Config(layout="stereo").filter_chain() is None
     assert vs.Config(layout="mono-flat", vf="null").filter_chain() == "null"
 
