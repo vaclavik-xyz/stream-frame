@@ -8,7 +8,8 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=%h/stream-frame/server
 ExecStart=@PYTHON@ %h/stream-frame/server/streamframe.py --bitrate 4M \
-  --record %h/recordings --record-time 300 --record-limit 20G --gaze-csv %h/recordings
+  --record %h/recordings --record-time 300 --record-limit 20G --gaze-csv %h/recordings \
+  --audio auto
 Restart=always
 RestartSec=3
 # give the encoder time to finish the segment and exit cleanly
