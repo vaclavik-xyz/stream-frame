@@ -112,6 +112,7 @@
   #toast-link { color:var(--accent); margin-left:6px; text-decoration:underline; font-weight:600; }
   #bar button.off { opacity:.3; pointer-events:none; }
   #bar button.busy { opacity:.5; }
+  #bar button.muted { opacity:.45; }
 
   #gazebadge { position:fixed; left:14px; bottom:calc(12px + env(safe-area-inset-bottom));
     font:11px/1 ui-monospace,Menlo,monospace; font-variant-numeric:tabular-nums; color:var(--dim);
@@ -239,6 +240,8 @@
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
   <symbol id="i-scissors" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M8.2 7.6 19 18M8.2 16.4 19 6"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.4 2.9 19.3h18.2L12 3.4z"/><path d="M12 9.2v4.4M12 16.9h.01"/></symbol>
+  <symbol id="i-sound" viewBox="0 0 24 24"><path d="M4 9.4h3.3L12 5.5v13L7.3 14.6H4z"/><path d="M15.6 9.1a4.2 4.2 0 0 1 0 5.8M18.2 6.6a7.6 7.6 0 0 1 0 10.8"/></symbol>
+  <symbol id="i-mute" viewBox="0 0 24 24"><path d="M4 9.4h3.3L12 5.5v13L7.3 14.6H4z"/><path d="M15.8 9.6l5.4 4.8M21.2 9.6l-5.4 4.8"/></symbol>
 </svg>
 
 <video id="v" playsinline autoplay muted controls></video>
@@ -260,6 +263,7 @@
 <div id="mark"><span class="dot"></span>Stream Frame</div>
 <div id="bar" role="toolbar" aria-label="view controls">
   <button id="mode" title="transport"><svg class="ico"><use href="#i-bolt"/></svg></button>
+  <button id="sound" class="muted" title="sound (a)" aria-label="sound"><svg class="ico"><use id="sound-ico" href="#i-mute"/></svg></button>
   <button id="stats" title="stats (t)" aria-label="stats"><svg class="ico"><use href="#i-activity"/></svg></button>
   <button id="gazebtn" title="eye tracking reticle (g)" aria-label="eye tracking"><svg class="ico"><use href="#i-eye"/></svg></button>
   <button id="settings" title="settings (s)" aria-label="settings"><svg class="ico"><use href="#i-sliders"/></svg></button>
@@ -311,6 +315,33 @@
   const hud = document.getElementById("hud");
   const modeBtn = document.getElementById("mode");
   const qs = (s) => (TOKEN ? s + (s.includes("?") ? "&" : "?") + "token=" + encodeURIComponent(TOKEN) : s);
+
+  // sound: browsers only start audio after a gesture, so the page comes up muted and
+  // unmutes on the first tap anywhere. The button and the "a" key toggle it after that.
+  const soundBtn = document.getElementById("sound");
+  const soundIco = document.getElementById("sound-ico");
+  const SOUND_KEY = "streamframe.sound";
+  let wantSound = localStorage.getItem(SOUND_KEY) !== "0";
+  function paintSound() {
+    const muted = !wantSound || v.muted;
+    soundBtn.classList.toggle("muted", muted);
+    soundBtn.title = muted ? "sound (a)" : "mute (a)";
+    soundIco.setAttribute("href", muted ? "#i-mute" : "#i-sound");
+  }
+  function unmute() {
+    if (!v.muted) return;
+    v.muted = false;
+    v.play().catch(() => {});
+    paintSound();
+  }
+  function toggleSound() {
+    if (v.muted) { wantSound = true; unmute(); }
+    else { wantSound = false; v.muted = true; paintSound(); }
+    try { localStorage.setItem(SOUND_KEY, wantSound ? "1" : "0"); } catch (e) {}
+  }
+  soundBtn.addEventListener("click", (e) => { e.stopPropagation(); toggleSound(); });
+  document.addEventListener("pointerdown", () => { if (wantSound) unmute(); });
+  paintSound();
 
   const wantHls = location.hash.includes("hls") || new URLSearchParams(location.search).has("hls");
   const isApple = /iPad|iPhone|iPod/.test(navigator.userAgent);
@@ -986,6 +1017,7 @@
     if (e.key === "t") { hud.classList.toggle("on"); renderHud(); }
     if (e.key === "f") document.getElementById("fs").click();
     if (e.key === "m") modeBtn.click();
+    if (e.key === "a") soundBtn.click();
     if (e.key === "c") setChromeHidden(!chromeHidden);
     if (e.key === "g") gazeSet(!gazeOn);
     if (e.key === "s") document.getElementById("settings").click();

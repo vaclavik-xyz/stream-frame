@@ -48,9 +48,10 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
 - **Self-healing on both ends.** The page watches its own clock, falls back from HLS to WebRTC when HLS
   cannot start, and beacons what happened to the server log; the daemon re-opens the capture ring when
   the compositor restarts and re-runs the encoder when MediaMTX loses the RTSP branch.
-- **Optional sound.** `--audio auto` muxes the system audio (PipeWire/Pulse monitor of the sink the
-  headset plays into) into both paths as AAC — HLS and RTSP/mpv/VLC get audio; the browser WebRTC path
-  stays video-only, because browsers do not play AAC over WHEP.
+- **Optional sound, on every path.** `--audio auto` muxes the system audio (PipeWire/Pulse monitor of
+  the sink the headset plays into) into both paths: AAC for HLS, and a second Opus encode of the same
+  tap for RTSP, because WebRTC forwards Opus and nothing else. The page starts muted (browsers refuse
+  to autoplay sound) and unmutes on the first tap; the speaker button or `a` toggles it.
 - **Where the wearer looks.** The runtime's eye-tracking estimate is read from its shared-memory record
   and published as JSON and server-sent events; the player draws a reticle on the picture. Read-only, no
   driver, no images of the eye — only a direction and two lid values. See [docs/gaze.md](docs/gaze.md).
@@ -159,7 +160,7 @@ curl -s http://<host>:8101/status | python3 -m json.tool
 --bitrate 4M          --fps 60          --preset ultrafast
 --hls-time 2          --hls-window 8    --idle 120
 --rtsp-url rtsp://127.0.0.1:8554/vr    ('' = HLS only)
---audio auto                                   mux system audio as AAC (default: off)
+--audio auto                                   mux system audio (AAC + Opus; default: off)
 --source ring|v4l2:/dev/video99                capture from the layer or from a video node
 --gaze auto|off|<path>                         read the eye server (default auto); see docs/gaze.md
 --gaze-shm /dev/shm/eye-server.mmap            where that record lives
@@ -189,7 +190,7 @@ what this project deliberately is not: [docs/prior-art.md](docs/prior-art.md).
 
 - **Audio is a separate tap.** The layer hooks the present queue, which carries no audio; `--audio`
   records the PipeWire/Pulse sink monitor instead, so it hears whatever the machine plays, not a
-  per-application stream, and it is silent on the browser WebRTC path (AAC is not a WebRTC codec).
+  per-application stream.
 - **One streamer per machine.** The ring name is fixed; a lock file stops a second daemon (two would
   fight over the playlist and the encoder).
 - **No input, no control.** Read-only by design — nothing in the stream can drive the headset. Gaze is

@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Sound in the browser. WebRTC carries Opus and drops AAC, so the audio tap is now
+  encoded twice from one input: AAC for the HLS and MP4 outputs, Opus for the RTSP
+  branch MediaMTX serves over WHEP. Each tee slave selects the pair it can mux.
+- The player starts muted (browsers refuse to autoplay audio) and unmutes on the
+  first tap anywhere; a speaker button and the `a` key toggle it, remembered across
+  loads.
+
+### Changed
+
+- `--audio` also accepts a file or `lavfi:<graph>`, so the audio path can be tested
+  without a sound server.
+
 ## [0.1.0] - 2026-11-01
 
 First release. The tool does what it was written to do: a headset's picture and

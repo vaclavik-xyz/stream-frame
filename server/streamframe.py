@@ -504,8 +504,7 @@ class Encoder:
             cmd += ["-f", "rawvideo", "-pix_fmt", "bgra", "-s", f"{width}x{height}",
                     "-r", str(cfg.fps), "-i", "-"]
         if audio:
-            # system audio (PipeWire/Pulse monitor of the sink the headset plays into)
-            cmd += ["-f", "pulse", "-i", audio]
+            cmd += audio_input_args(audio)
         vf = cfg.filter_chain(width)
         if vf:
             cmd += ["-vf", vf]
@@ -515,8 +514,26 @@ class Encoder:
                 "-maxrate", cfg.bitrate, "-bufsize", str(mem_suffix(cfg.bitrate) * 2),
                 "-g", str(max(1, cfg.fps // 2)), "-b:v", cfg.bitrate, "-pix_fmt", "yuv420p"]
         if audio:
-            cmd += ["-c:a", "aac", "-b:a", "128k", "-ar", "48000", "-ac", "2"]
+            cmd += ["-ar", "48000", "-ac", "2"]
         playlist = os.path.join(cfg.hls_dir, "live.m3u8")
+        # WebRTC forwards Opus and nothing else, HLS wants AAC, and both have to leave this
+        # one process: encode the tap twice and let each slave pick a pair by index
+        # (0=v, 1=aac, 2=opus). Without libopus the RTSP slave keeps AAC, which plays
+        # everywhere except the browser.
+        split = bool(audio) and bool(cfg.rtsp_url) and libopus_available()
+        if split:
+            cmd += ["-c:a:0", "aac", "-b:a:0", "128k", "-c:a:1", "libopus", "-b:a:1", "96k"]
+            maps = ["-map", "0:v", "-map", "1:a", "-map", "1:a"]
+            hls_select, rtsp_select = "0,1", "0,2"    # video+aac, video+opus
+        elif audio:
+            cmd += ["-c:a", "aac", "-b:a", "128k"]
+            maps = ["-map", "0:v", "-map", "1:a"]
+            hls_select = rtsp_select = None
+        else:
+            maps = ["-map", "0:v"]
+            hls_select = rtsp_select = None
+        if audio and cfg.rtsp_url and not split:
+            log("audio: ffmpeg has no libopus, so the webrtc path will be silent")
         hls = ["-f", "hls",
                "-hls_time", str(cfg.hls_time),
                "-hls_list_size", str(cfg.hls_window),
@@ -524,7 +541,6 @@ class Encoder:
                "-start_number", str(start_no),
                "-hls_flags", "delete_segments+omit_endlist+independent_segments",
                playlist]
-        maps = ["-map", "0:v"] + (["-map", "1:a"] if audio else [])
         rec = cfg.record_dir()
         if not cfg.rtsp_url and not rec:
             return cmd + maps + hls
@@ -533,9 +549,10 @@ class Encoder:
                 f"start_number={start_no}:"
                 f"hls_flags=delete_segments+omit_endlist+independent_segments:"
                 f"hls_segment_filename={cfg.hls_dir}/live%d.ts")
-        slaves = [f"[f=hls:{opts}]{playlist}"]
+        slaves = [f"[f=hls:{opts}{_select(hls_select)}]{playlist}"]
         if cfg.rtsp_url:
-            slaves.append(f"[f=rtsp:onfail=ignore:rtsp_transport=tcp]{cfg.rtsp_url}")
+            slaves.append(f"[f=rtsp:onfail=ignore:rtsp_transport=tcp"
+                          f"{_select(rtsp_select)}]{cfg.rtsp_url}")
         if rec:
             # mp4 chunks, not one long file: each chunk is playable as soon as it is closed, and a
             # power cut costs the open chunk instead of the whole session. fragmented mp4 flags do
@@ -544,7 +561,8 @@ class Encoder:
             stamp = time.strftime("%Y%m%d-%H%M%S")
             ropts = (f"segment_time={max(10, int(cfg.record_time))}:segment_format=mp4:"
                      f"reset_timestamps=1")
-            slaves.append(f"[f=segment:{ropts}:onfail=ignore]{rec}/rec-{stamp}-%03d.mp4")
+            slaves.append(f"[f=segment:{ropts}:onfail=ignore{_select(hls_select)}]"
+                          f"{rec}/rec-{stamp}-%03d.mp4")
         return cmd + ["-f", "tee"] + maps + ["|".join(slaves)]
 
     def _progress_path(self) -> str:
@@ -1471,6 +1489,43 @@ def resolve_audio(cfg: Config) -> str | None:
     return want
 
 
+def audio_input_args(audio: str) -> list[str]:
+    """ffmpeg input for the audio tap.
+
+    Normally a PipeWire/Pulse monitor of the sink the headset plays into. "lavfi:<graph>" and a
+    plain file path are accepted so the audio path can be exercised without a sound server — the
+    tests use a sine tone, and the same flag is handy when there is no audio to tap.
+    """
+    if audio.startswith("lavfi:"):
+        return ["-f", "lavfi", "-i", audio[len("lavfi:"):]]
+    if os.path.isfile(audio):
+        return ["-i", audio]
+    return ["-f", "pulse", "-i", audio]
+
+
+def _select(spec: str | None) -> str:
+    """A tee slave option that restricts the slave to the streams it can mux."""
+    return f":select={spec}" if spec else ""
+
+
+_OPUS: bool | None = None
+
+
+def libopus_available() -> bool:
+    """MediaMTX hands WebRTC an Opus track or nothing; without the encoder the browser stays silent."""
+    global _OPUS
+    if _OPUS is None:
+        try:
+            out = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                                 capture_output=True, text=True, timeout=30).stdout
+            _OPUS = " libopus " in out
+        except (OSError, subprocess.SubprocessError):
+            _OPUS = False
+        if not _OPUS:
+            log("audio: this ffmpeg has no libopus encoder")
+    return _OPUS
+
+
 def mediamtx_ready(cfg: Config) -> bool | None:
     """True/False when MediaMTX answers, None when it is not there at all."""
     try:
@@ -1599,7 +1654,8 @@ def build_config(argv=None) -> Config:
                     help="seconds of recent stream kept aside for /api/clip; 0 turns it off")
     ap.add_argument("--idle", type=float, default=float(_env("IDLE", 120)))
     ap.add_argument("--audio", default=_env("AUDIO", ""),
-                    help='system audio to mux in: "auto" (default sink monitor) or a pulse source name')
+                    help='system audio to mux in: "auto" (default sink monitor), a pulse source '
+                         'name, a file, or "lavfi:<graph>" for a synthetic tone')
     ap.add_argument("--rtsp-url", default=_env("RTSP", "rtsp://127.0.0.1:8554/vr"),
                     help="extra RTSP output for MediaMTX; empty disables it")
     ap.add_argument("--mediamtx-api", default="http://127.0.0.1:9997")

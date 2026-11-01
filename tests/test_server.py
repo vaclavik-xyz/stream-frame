@@ -405,7 +405,8 @@ def test_build_cmd_without_audio_has_no_extra_input():
     assert "pulse" not in cmd and "1:a" not in cmd
 
 
-def test_build_cmd_with_audio_adds_pulse_input_and_aac():
+def test_build_cmd_with_audio_adds_pulse_input_and_aac(monkeypatch):
+    monkeypatch.setattr(vs, "libopus_available", lambda: False)   # old ffmpeg: AAC everywhere
     cfg = vs.Config(hls_dir="/tmp/x", audio="auto")
     cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(1440, 720, 0, "alsa_out.monitor")
     assert "pulse" in cmd and cmd[cmd.index("pulse") + 2] == "alsa_out.monitor"
@@ -413,8 +414,34 @@ def test_build_cmd_with_audio_adds_pulse_input_and_aac():
     assert cmd.count("-map") == 2 and "1:a" in cmd
     assert cmd[cmd.index("-c:a") + 1] == "aac"
     assert "128k" in cmd
-    # both slaves still get every stream: tee without an explicit select
+    # no split, so every slave still takes every stream
     assert cmd[-1].count("|") == 1 and "select=" not in cmd[-1]
+
+
+def test_build_cmd_splits_audio_so_webrtc_gets_opus(monkeypatch):
+    """WebRTC drops AAC on the floor: the RTSP slave has to carry Opus, HLS has to keep AAC."""
+    monkeypatch.setattr(vs, "libopus_available", lambda: True)
+    cfg = vs.Config(hls_dir="/tmp/x", audio="auto")
+    cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(1440, 720, 0, "alsa_out.monitor")
+    assert cmd[cmd.index("-c:a:0") + 1] == "aac" and cmd[cmd.index("-b:a:0") + 1] == "128k"
+    assert cmd[cmd.index("-c:a:1") + 1] == "libopus" and cmd[cmd.index("-b:a:1") + 1] == "96k"
+    assert cmd.count("-map") == 3                      # v, aac, opus
+    hls, rtsp = cmd[-1].split("|")
+    assert "select=0,1" in hls and "live.m3u8" in hls  # video + AAC
+    assert "select=0,2" in rtsp and "8554/vr" in rtsp  # video + Opus
+
+
+def test_build_cmd_does_not_split_without_webrtc(monkeypatch):
+    monkeypatch.setattr(vs, "libopus_available", lambda: True)
+    cfg = vs.Config(hls_dir="/tmp/x", audio="auto", rtsp_url=None)
+    cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(1440, 720, 0, "spk.monitor")
+    assert "-c:a" in cmd and cmd[cmd.index("-c:a") + 1] == "aac"
+    assert "libopus" not in cmd and "select=" not in cmd[-1]
+
+
+def test_audio_input_accepts_a_test_tone():
+    assert vs.audio_input_args("lavfi:sine=frequency=440") == ["-f", "lavfi", "-i", "sine=frequency=440"]
+    assert vs.audio_input_args("alsa.monitor") == ["-f", "pulse", "-i", "alsa.monitor"]
 
 
 def test_resolve_audio_off_and_auto(monkeypatch):
