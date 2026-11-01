@@ -542,3 +542,77 @@ def test_gaze_sse_emits_one_event(server, monkeypatch):
     assert "HTTP/1.1 200" in text
     assert "text/event-stream" in text
     assert "retry: 1000" in text and '"yaw":25.0' in text
+
+
+# --------------------------------------------------------------- regressions
+# each of these pins a bug found in review; the docstring says what went wrong before
+
+
+def test_non_ascii_token_is_a_401_not_a_dropped_connection(server):
+    """hmac.compare_digest on str raises TypeError for non-ASCII: the request died with no response."""
+    base, cfg, _ = server
+    cfg.token = "s3cret"
+    try:
+        assert get(base + "/status?token=%C5%BE")[0] == 401
+        assert get(base + "/status?token=s3cret")[0] == 200
+        assert get(base + "/status", headers={"Authorization": "Bearer s3cret"})[0] == 200
+    finally:
+        cfg.token = ""
+
+
+def test_log_beacon_needs_the_token(server, monkeypatch):
+    base, cfg, _ = server
+    cfg.token = "s3cret"
+    monkeypatch.setattr(vs, "BEACON_LOG", "/tmp/vrstreamd-test-beacon.log", raising=False)
+    try:
+        assert get(base + "/log?e=hello")[0] == 401
+        assert get(base + "/log?token=s3cret&e=hello")[0] == 204
+    finally:
+        cfg.token = ""
+
+
+def test_log_beacon_rotates_instead_of_filling_tmpfs(server, monkeypatch, tmp_path):
+    base, _, _ = server
+    big = tmp_path / "client.log"
+    big.write_bytes(b"x" * 4096)
+    monkeypatch.setattr(vs, "BEACON_MAX_BYTES", 1024)
+    monkeypatch.setattr(vs, "BEACON_LOG", str(big), raising=False)
+    assert get(base + "/log?e=" + "a" * 50)[0] == 204
+    assert (tmp_path / "client.log.1").exists()
+    assert Path(str(big)).stat().st_size < 4096
+
+
+def test_range_past_the_end_is_416(server):
+    """bytes=999999- used to be answered with the whole segment, still labelled 206."""
+    base, cfg, _ = server
+    (Path(cfg.hls_dir) / "live7.ts").write_bytes(bytes(range(50)))
+    code, _, headers = get(base + "/live7.ts", headers={"Range": "bytes=999999-"})
+    assert code == 416
+    assert headers["Content-Range"] == "bytes */50"
+
+
+def test_head_on_the_event_stream_returns_no_stream(server, monkeypatch):
+    base, _, _ = server
+    monkeypatch.setattr(vs.Handler, "gaze", FakeGaze())
+    code, body, headers = get(base + "/gaze.sse", method="HEAD")
+    assert code == 200 and body == b""
+    assert headers["Content-Type"].startswith("text/event-stream")
+
+
+def test_ring_refuses_a_frame_overwritten_during_the_copy(ring_file, monkeypatch):
+    """A writer that bumps seq after memcpy means a frame can be half old, half new."""
+    path, slot = ring_file
+    put_frame(path, slot, 0, 5, fill=7)
+    ring = vs.FrameRing(str(path))
+    assert ring.open()
+    calls = {"n": 0}
+
+    def moving_sequence(_slot):
+        calls["n"] += 1
+        return 5 if calls["n"] <= vs.SLOTS else 6        # the counter moves on the re-check
+
+    monkeypatch.setattr(ring, "_seq", moving_sequence)
+    seq, data = ring.latest(0, 8 * 4 * 4)
+    assert (seq, data) == (0, None)
+    assert ring.torn == 1
+    ring.close()

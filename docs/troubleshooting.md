@@ -147,8 +147,10 @@ never move, check `version` in `/status` first.
 
 ## Turning on `--token`
 
-`--token` guards the HTTP side only (`/`, `/live.m3u8`, `.ts`, `/status`); `/healthz`, `/log` and `/wake`
-stay open so the page beacon and MediaMTX's `runOnDemand` keep working. RTSP (`:8554`), WebRTC (`:8889`)
+`--token` guards the HTTP side (`/`, `/live.m3u8`, `.ts`, `/status`, `/gaze*` and `/log`); `/healthz` and
+`/wake` stay open so MediaMTX's `runOnDemand` keeps working. The page adds the token to its own beacon
+calls, so telemetry keeps arriving with `--token` on. The beacon log rotates at 1 MiB — `/tmp` is tmpfs on
+SteamOS and an unbounded append there is a way to fill RAM. RTSP (`:8554`), WebRTC (`:8889`)
 and the UDP port are MediaMTX's own listeners and remain unauthenticated — on a shared network either
 bind MediaMTX to loopback and front it with a proxy, or configure `authInternalUsers` in
 `config/mediamtx.yml`. Treat the token as "keeps honest people out", not as a security boundary.

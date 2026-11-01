@@ -21,6 +21,7 @@
 #include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <pthread.h>
 
 #include <vulkan/vulkan.h>
 #include <vulkan/vk_layer.h>
@@ -52,6 +53,12 @@ typedef struct {
     PFN_vkWaitForFences pWaitForFences;
     PFN_vkResetFences pResetFences;
     PFN_vkMapMemory pMapMemory;
+    PFN_vkUnmapMemory pUnmapMemory;
+    PFN_vkFreeMemory pFreeMemory;
+    PFN_vkDestroyImage pDestroyImage;
+    PFN_vkDestroyBuffer pDestroyBuffer;
+    PFN_vkDestroyCommandPool pDestroyCommandPool;
+    PFN_vkDestroyFence pDestroyFence;
     PFN_vkGetPhysicalDeviceMemoryProperties pGetPhysMemProps;
     VkPhysicalDevice phys;
     VkQueue queue;
@@ -83,6 +90,10 @@ static PFN_vkGetSwapchainImagesKHR g_get_sc_images;
 static PFN_vkDestroySwapchainKHR g_destroy_sc;
 static VkInstance g_instance = VK_NULL_HANDLE;
 static CapCtx g_cap;
+// Vulkan allows vkQueuePresentKHR from several threads; two captures at once would write the same
+// shm slot (g_seq % SLOTS) and publish colliding sequence numbers. trylock: a busy capture drops the
+// frame instead of making the compositor wait.
+static pthread_mutex_t g_cap_lock = PTHREAD_MUTEX_INITIALIZER;
 static ScInfo g_scs[MAX_SC];
 static int g_sc_count;
 static double g_last_frame_t;
@@ -162,6 +173,47 @@ static void shm_write(const void *data, size_t bytes, int w, int h) {
     __atomic_store_n((uint64_t *)base, g_seq, __ATOMIC_RELEASE);
 }
 
+// destroy everything cap_setup created; a resize used to just forget the handles and allocate again,
+// so every resolution change leaked an image, two device allocations, a buffer, a command pool and a
+// fence until vkAllocateMemory started failing and capture went silently dead
+static void cap_teardown(CapCtx *c) {
+    if (c->dev != VK_NULL_HANDLE) {
+        if (c->pending && c->fence && c->pWaitForFences) {
+            c->pWaitForFences(c->dev, 1, &c->fence, VK_TRUE, 1000000000ull);   // 1 s
+        }
+        c->pending = 0;
+        if (c->fence) {
+            if (c->pDestroyFence) c->pDestroyFence(c->dev, c->fence, NULL);
+            c->fence = VK_NULL_HANDLE;
+        }
+        if (c->pool) {
+            if (c->pDestroyCommandPool) c->pDestroyCommandPool(c->dev, c->pool, NULL);
+            c->pool = VK_NULL_HANDLE;
+            c->cmd = VK_NULL_HANDLE;
+        }
+        if (c->mapped) {
+            if (c->pUnmapMemory) c->pUnmapMemory(c->dev, c->bufMem);
+            c->mapped = NULL;
+        }
+        if (c->buf) {
+            if (c->pDestroyBuffer) c->pDestroyBuffer(c->dev, c->buf, NULL);
+            c->buf = VK_NULL_HANDLE;
+        }
+        if (c->bufMem) {
+            if (c->pFreeMemory) c->pFreeMemory(c->dev, c->bufMem, NULL);
+            c->bufMem = VK_NULL_HANDLE;
+        }
+        if (c->lin) {
+            if (c->pDestroyImage) c->pDestroyImage(c->dev, c->lin, NULL);
+            c->lin = VK_NULL_HANDLE;
+        }
+        if (c->linMem) {
+            if (c->pFreeMemory) c->pFreeMemory(c->dev, c->linMem, NULL);
+            c->linMem = VK_NULL_HANDLE;
+        }
+    }
+}
+
 static int cap_setup(CapCtx *c, uint32_t srcW, uint32_t srcH, VkFormat fmt) {
     int wantW = env_int("VRSTREAM_CAP_W", 1440);
     if (wantW < 320) wantW = 320;
@@ -171,9 +223,7 @@ static int cap_setup(CapCtx *c, uint32_t srcW, uint32_t srcH, VkFormat fmt) {
 
     if (c->lin && (c->srcW != srcW || c->srcH != srcH || c->dstW != dstW || c->dstH != dstH || c->format != fmt)) {
         logmsg("capture: resize %ux%u -> %ux%u, rebuilding", c->dstW, c->dstH, dstW, dstH);
-        c->lin = VK_NULL_HANDLE; c->linMem = VK_NULL_HANDLE;
-        c->buf = VK_NULL_HANDLE; c->bufMem = VK_NULL_HANDLE; c->mapped = NULL;
-        c->cmd = VK_NULL_HANDLE; c->fence = VK_NULL_HANDLE; c->pending = 0;
+        cap_teardown(c);
     }
     c->srcW = srcW; c->srcH = srcH; c->dstW = dstW; c->dstH = dstH; c->format = fmt;
     if (c->lin) return 1;
@@ -387,7 +437,9 @@ VKAPI_ATTR void VKAPI_CALL cap_DestroySwapchainKHR(VkDevice dev, VkSwapchainKHR 
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL cap_QueuePresentKHR(VkQueue queue, const VkPresentInfoKHR *info) {
-    if (g_enabled == 1 && info && info->swapchainCount > 0) {
+    int locked = 0;
+    if (g_enabled == 1 && pthread_mutex_trylock(&g_cap_lock) == 0) locked = 1;
+    if (g_enabled == 1 && locked && info && info->swapchainCount > 0) {
         cap_collect(&g_cap);
         double t = now_s();
         int fps = env_int("VRSTREAM_CAP_FPS", 60);
@@ -406,9 +458,10 @@ VKAPI_ATTR VkResult VKAPI_CALL cap_QueuePresentKHR(VkQueue queue, const VkPresen
                 }
             }
         }
-    } else if (g_enabled == 1) {
+    } else if (g_enabled == 1 && locked) {
         cap_collect(&g_cap);
     }
+    if (locked) pthread_mutex_unlock(&g_cap_lock);
     return g_present(queue, info);
 }
 
@@ -487,6 +540,12 @@ VKAPI_ATTR VkResult VKAPI_CALL cap_CreateDevice(VkPhysicalDevice gpu, const VkDe
     LOAD(pWaitForFences, vkWaitForFences);
     LOAD(pResetFences, vkResetFences);
     LOAD(pMapMemory, vkMapMemory);
+    LOAD(pUnmapMemory, vkUnmapMemory);
+    LOAD(pFreeMemory, vkFreeMemory);
+    LOAD(pDestroyImage, vkDestroyImage);
+    LOAD(pDestroyBuffer, vkDestroyBuffer);
+    LOAD(pDestroyCommandPool, vkDestroyCommandPool);
+    LOAD(pDestroyFence, vkDestroyFence);
     #undef LOAD
 
     if (!g_cap.pCreateImage || !g_cap.pCmdBlitImage || !g_cap.pCmdCopyImageToBuffer || !g_cap.pCreateCommandPool) {

@@ -52,6 +52,8 @@ SLOT_HDR = 16
 RTSP_PATH = "vr"
 
 # layout presets: what the compositor presents -> what a TV wants to see
+BEACON_MAX_BYTES = 1 << 20        # rotate the client telemetry log at 1 MiB
+BEACON_LOG = "/tmp/vrstreamd-client.log"
 LAYOUTS = {
     # two lens-warped eyes side by side, untouched
     "stereo": None,
@@ -186,6 +188,7 @@ class FrameRing:
         self._fd = -1
         self._mm: mmap.mmap | None = None
         self._lock = threading.Lock()
+        self.torn = 0                       # frames refused because the writer overwrote them mid-copy
         self.width = self.height = 0
         self.slot_size = 0
         self.inode = 0
@@ -266,6 +269,12 @@ class FrameRing:
             off = HDR + best_slot * self.slot_size + SLOT_HDR
             data = self._mm[off:off + frame_bytes]
             if len(data) != frame_bytes:
+                return last_seq, None
+            # the writer bumps seq *after* copying, so a sample is only trustworthy if the counter
+            # did not move while we were reading: otherwise this is half of two different frames, and
+            # feeding that to x264 corrupts every P-frame until the next IDR
+            if self._seq(best_slot) != best_seq:
+                self.torn += 1
                 return last_seq, None
             return best_seq, data
 
@@ -701,7 +710,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         token = self.cfg.token
         if not token:
             return True
-        return hmac.compare_digest(self._given_token(query), token)
+        given = self._given_token(query)
+        # compare_digest on str demands pure ASCII and raises TypeError otherwise — and a TypeError
+        # inside a request handler is a dropped connection, not a 401. Compare bytes instead.
+        return hmac.compare_digest(given.encode("utf-8"), token.encode("utf-8"))
 
     def _send(self, data: bytes) -> int:
         """Write the whole buffer: with an unbuffered wfile a single write() may accept only part."""
@@ -727,8 +739,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _beacon(self, query: dict) -> None:
         text = (query.get("e") or [""])[0][:200]
         text = text.replace("\r", " ").replace("\n", " ")      # no log-line forging
+        path = BEACON_LOG
         try:
-            with open("/tmp/vrstreamd-client.log", "a") as fh:
+            # /tmp is tmpfs on SteamOS: an unauthenticated, unbounded append is a way to fill RAM
+            if os.path.exists(path) and os.path.getsize(path) > BEACON_MAX_BYTES:
+                os.replace(path, path + ".1")
+            with open(path, "a") as fh:
                 fh.write(f"{time.strftime('%H:%M:%S')} {self.client_address[0]} {text}\n")
         except OSError:
             pass
@@ -756,8 +772,14 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 elif last:                              # suffix range: the last N bytes
                     start = max(0, size - int(last))
                 end = min(end, size - 1)
-                if start > end:
-                    start = 0
+                if start >= size or start > end:
+                    # a range past the end is unsatisfiable; pretending it is the whole segment
+                    # makes AVPlayer re-request a file it thinks is already streaming fine
+                    self.send_response(416)
+                    self.send_header("Content-Range", f"bytes */{size}")
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                    return
                 code = 206
             except ValueError:
                 start, end, code = 0, size - 1, 200
@@ -800,6 +822,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._json({"ok": True}, head=head)
             return
         if path == "/log":
+            if not self._authorized(query):
+                self._json({"error": "unauthorized"}, 401, head=head)
+                return
             self._beacon(query)
             return
         if path == "/wake":                       # MediaMTX runOnDemand target, no token needed
@@ -828,7 +853,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._gaze_json(head)
             return
         if path == "/gaze.sse":
-            self._gaze_stream()
+            self._gaze_stream(head)
             return
         if path == "/gaze.csv":
             self._gaze_file(head)
@@ -911,7 +936,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     def _gaze_json(self, head: bool = False) -> None:
         self._json(self._gaze_payload(), head=head)
 
-    def _gaze_stream(self) -> None:
+    def _gaze_stream(self, head: bool = False) -> None:
         """Server-sent events: no client library, automatic reconnects, no WebSocket handshake."""
         if self.gaze is None:
             self._json({"available": False, "error": "gaze off"}, 200)
@@ -923,6 +948,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("X-Accel-Buffering", "no")
         self.send_header("Connection", "close")
         self.end_headers()
+        if head:                                   # HEAD must not open an hour-long stream
+            return
         self._send(b"retry: 1000\n\n")
         last, start, beat = None, time.time(), time.time()
         try:
@@ -1044,7 +1071,7 @@ def clear_hls(cfg: Config) -> None:
 
 def watchdog(cfg: Config, enc: Encoder) -> None:
     """Idle stop + recovery of the RTSP branch. Never raises out of the loop."""
-    lost_rtsp = 0
+    lost_rtsp, rtsp_pause_until = 0, 0.0
     while True:
         time.sleep(5)
         try:
@@ -1057,7 +1084,7 @@ def watchdog(cfg: Config, enc: Encoder) -> None:
                 continue
             # tee with onfail=ignore drops the RTSP branch for good when MediaMTX restarts:
             # notice it and re-run the encoder instead of pretending the second path still works
-            if cfg.rtsp_url and enc.alive() and enc.uptime() > 15:
+            if cfg.rtsp_url and enc.alive() and enc.uptime() > 15 and time.time() >= rtsp_pause_until:
                 ready = mediamtx_ready(cfg)
                 if ready is False:
                     lost_rtsp += 1
@@ -1066,8 +1093,11 @@ def watchdog(cfg: Config, enc: Encoder) -> None:
                             f"restarting encoder")
                         enc.restart()
                     else:
-                        log("rtsp branch keeps failing, continuing with HLS only")
-                        cfg.rtsp_url = None
+                        # do not give up for the life of the process: MediaMTX may take a while to
+                        # come back, and a permanent switch to HLS-only is a silent loss of the fast path
+                        rtsp_pause_until = time.time() + 300
+                        lost_rtsp = 0
+                        log("rtsp branch keeps failing; pausing retries for 5 min (HLS continues)")
                     continue
                 if ready:
                     lost_rtsp = 0
