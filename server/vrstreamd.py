@@ -40,6 +40,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlparse
 
+from gaze import EyeSource
+
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 # ring buffer written by the Vulkan layer (see docs/architecture.md)
@@ -107,6 +109,9 @@ class Config:
     layout: str = "mono-flat"
     vf: str | None = None              # raw ffmpeg filter override
     source: str = "ring"               # "ring" (Vulkan layer) or "v4l2:/dev/video99"
+    gaze: str = "auto"                 # off | auto (when the eye server exists) | path
+    gaze_shm: str = "/dev/shm/eye-server.mmap"
+    gaze_fov: str = "100x90"           # approximate, only used to place the reticle
     shm: str = "/dev/shm/vrstream_frames"
     hls_dir: str = "/tmp/vrstream-hls"
     hls_time: int = 2
@@ -128,6 +133,22 @@ class Config:
         if src.startswith("/dev/video"):
             return src
         return None
+
+    def gaze_source(self) -> str | None:
+        """Path of the eye-server record to read, or None when gaze is disabled/absent."""
+        mode = (self.gaze or "off").strip()
+        if mode in ("", "off", "0", "no"):
+            return None
+        if mode in ("auto", "on", "yes", "1"):
+            return self.gaze_shm if os.path.exists(self.gaze_shm) else None
+        return mode
+
+    def gaze_fov_pair(self) -> tuple[float, float]:
+        try:
+            h, _, v = (self.gaze_fov or "").partition("x")
+            return max(1.0, float(h)), max(1.0, float(v or h))
+        except ValueError:
+            return 100.0, 90.0
 
     def filter_chain(self) -> str | None:
         if self.vf:
@@ -628,6 +649,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     cfg: Config
     enc: Encoder
     ring: FrameRing
+    gaze: EyeSource | None = None
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=self.cfg.hls_dir, **kw)
@@ -668,6 +690,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return True
         return hmac.compare_digest(self._given_token(query), token)
 
+    def _send(self, data: bytes) -> int:
+        """Write the whole buffer: with an unbuffered wfile a single write() may accept only part."""
+        view = memoryview(data)
+        total = 0
+        while view:
+            sent = self.wfile.write(view)
+            if not sent:
+                raise BrokenPipeError("client went away")
+            view = view[sent:]
+            total += sent
+        return total
+
     def _json(self, payload: dict, code: int = 200, head: bool = False) -> None:
         body = json.dumps(payload).encode()
         self.send_response(code)
@@ -675,7 +709,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         if not head:
-            self.wfile.write(body)
+            self._send(body)
 
     def _beacon(self, query: dict) -> None:
         text = (query.get("e") or [""])[0][:200]
@@ -731,7 +765,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 if not chunk:
                     break
                 try:
-                    self.wfile.write(chunk)
+                    self._send(chunk)
                 except (BrokenPipeError, ConnectionResetError):
                     return
                 remaining -= len(chunk)
@@ -770,7 +804,16 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/status":
             # in ring mode capture fps is sampled from the ring; a device is measured by ffmpeg
             fps = self.enc.encoder_fps() if self.cfg.v4l2_device() else self.ring.fps()
-            self._json({"fps": round(fps, 1), **self.enc.status()}, head=head)
+            gaze = {"enabled": self.gaze is not None}
+            if self.gaze is not None:
+                gaze.update(self.gaze.info())
+            self._json({"fps": round(fps, 1), "gaze": gaze, **self.enc.status()}, head=head)
+            return
+        if path == "/gaze":
+            self._gaze_json(head)
+            return
+        if path == "/gaze.sse":
+            self._gaze_stream()
             return
         if path in ("/", "/index.html"):
             self._page(head)
@@ -800,6 +843,56 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         super().do_GET()
 
+    def _gaze_payload(self) -> dict:
+        """Latest sample shaped for a player: degrees, plus -1..1 placement inside the flat image."""
+        half_h, half_v = (v / 2.0 for v in self.cfg.gaze_fov_pair())
+        info = self.gaze.info() if self.gaze is not None else {"available": False, "error": "gaze off"}
+        sample = self.gaze.latest() if self.gaze is not None else None
+        if sample is None:
+            return {"available": False, **info, "fov": [half_h * 2, half_v * 2]}
+        norm = lambda value, half: max(-1.0, min(1.0, value / half))  # noqa: E731
+        return {
+            **info,
+            "fov": [half_h * 2, half_v * 2],
+            **sample,
+            "x": round(norm(sample["yaw"], half_h), 4),
+            "y": round(norm(sample["pitch"], half_v), 4),
+        }
+
+    def _gaze_json(self, head: bool = False) -> None:
+        self._json(self._gaze_payload(), head=head)
+
+    def _gaze_stream(self) -> None:
+        """Server-sent events: no client library, automatic reconnects, no WebSocket handshake."""
+        if self.gaze is None:
+            self._json({"available": False, "error": "gaze off"}, 200)
+            return
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        self._send(b"retry: 1000\n\n")
+        last, start, beat = None, time.time(), time.time()
+        try:
+            while time.time() - start < 3600:
+                payload = self._gaze_payload()
+                stamp = payload.get("sample_time")
+                if stamp != last:
+                    last = stamp
+                    body = json.dumps(payload, separators=(",", ":")).encode()
+                    self._send(b"data: " + body + b"\n\n")
+                    beat = time.time()
+                elif time.time() - beat > 15:          # keep proxies and sleepy clients awake
+                    self._send(b": ping\n\n")
+                    self.wfile.flush()
+                    beat = time.time()
+                time.sleep(1 / 30)
+        except (BrokenPipeError, ConnectionResetError, OSError):
+            pass
+
     def _page(self, head: bool = False) -> None:
         token = self.cfg.token
         html = self.cfg.page
@@ -820,7 +913,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                              f"vrstream_token={token}; Path=/; SameSite=Lax; HttpOnly")
         self.end_headers()
         if not head:
-            self.wfile.write(body)
+            self._send(body)
 
     def log_message(self, format, *args):
         if self.cfg.verbose:
@@ -943,6 +1036,12 @@ def build_config(argv=None) -> Config:
     ap.add_argument("--layout", default=None, choices=sorted(LAYOUTS),
                     help="mono-flat (default for the ring), passthrough (default for a device), "
                          "mono-round, stereo, mono-flat-right")
+    ap.add_argument("--gaze", default=os.environ.get("VRSTREAM_GAZE", "auto"),
+                    help='eye tracking: "auto" (when /dev/shm/eye-server.mmap exists), "off", or a path')
+    ap.add_argument("--gaze-shm", default=os.environ.get("VRSTREAM_GAZE_SHM",
+                                                         "/dev/shm/eye-server.mmap"))
+    ap.add_argument("--gaze-fov", default=os.environ.get("VRSTREAM_GAZE_FOV", "100x90"),
+                    help="horizontal x vertical degrees the flat image covers, for reticle placement")
     ap.add_argument("--source", default=os.environ.get("VRSTREAM_SOURCE", "ring"),
                     help='"ring" = Vulkan layer shm (default), "v4l2:/dev/video99" = SteamVR '
                          'headset view, no layer needed')
@@ -1001,7 +1100,19 @@ def main(argv=None) -> int:
     ring.open()
     enc = Encoder(cfg, ring)
 
-    Handler.cfg, Handler.enc, Handler.ring = cfg, enc, ring
+    gaze_src = None
+    gaze_path = cfg.gaze_source()
+    if gaze_path:
+        gaze_src = EyeSource(gaze_path)
+        if gaze_src.start():
+            log(f"gaze: reading {gaze_path} (abi {gaze_src.version})")
+        else:
+            log(f"gaze: unavailable — {gaze_src.error}")
+            gaze_src = None
+    elif cfg.gaze not in ("off", "", "0", "no"):
+        log(f"gaze: {cfg.gaze_shm} not present, reticle stays off")
+
+    Handler.cfg, Handler.enc, Handler.ring, Handler.gaze = cfg, enc, ring, gaze_src
     srv = Server((cfg.bind, cfg.port), Handler)
 
     threading.Thread(target=watchdog, args=(cfg, enc), daemon=True).start()
@@ -1013,6 +1124,8 @@ def main(argv=None) -> int:
             return
         stopping.set()
         enc.shutdown()
+        if gaze_src is not None:
+            gaze_src.stop()
         # shutdown() waits for serve_forever() to return: calling it from this thread deadlocks
         threading.Thread(target=srv.shutdown, daemon=True).start()
 

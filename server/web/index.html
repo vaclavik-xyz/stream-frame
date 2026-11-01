@@ -24,16 +24,24 @@
          border:1px solid rgba(255,255,255,.14); border-radius:9px; padding:8px 11px; cursor:pointer;
          backdrop-filter:blur(8px); }
   #bar button:hover { border-color:var(--accent); color:var(--accent); }
-  body.clean #bar, body.clean #hud, body.clean #msg { display:none; }
+  body.clean #bar, body.clean #hud, body.clean #msg, body.clean #gaze { display:none; }
+  #gaze { position:fixed; inset:0; width:100%; height:100%; pointer-events:none; }
+  #gazebadge { position:fixed; left:12px; bottom:calc(12px + env(safe-area-inset-bottom));
+        font:11px/1 ui-monospace,Menlo,monospace; color:var(--dim); opacity:.85; padding:6px 9px;
+        border-radius:8px; background:rgba(10,10,14,.62); display:none; }
+  #bar button.on { border-color:var(--accent); color:var(--accent); }
 </style>
 </head>
 <body>
 <video id="v" playsinline autoplay muted controls></video>
+<canvas id="gaze"></canvas>
+<div id="gazebadge"></div>
 <div id="msg">connecting…</div>
 <div id="hud"></div>
 <div id="bar">
   <button id="mode" title="switch transport">webrtc</button>
   <button id="stats" title="toggle stats (t)">stats</button>
+  <button id="gazebtn" title="eye tracking reticle (g)">gaze</button>
   <button id="fs" title="fullscreen (f)">⤢</button>
 </div>
 <script>
@@ -201,8 +209,99 @@
       "encoder   " + (status.encoder ? "<b>on</b>" : "off") + "  " + (status.bitrate || "") + "  " + LAYOUT + "\n" +
       transport +
       "restarts  " + status.restarts + "  (player " + restarts + ")\n" +
-      "viewers   " + status.readers;
+      "viewers   " + status.readers +
+      (status.gaze && status.gaze.enabled
+        ? "\ngaze      " + (status.gaze.available
+            ? "<b>" + status.gaze.rate.toFixed(0) + "</b> Hz  age " + status.gaze.age + " s"
+            : "off (" + (status.gaze.error || "no data") + ")")
+        : "");
   }
+
+  // ---------------------------------------------------------------- gaze
+  // The eye server publishes head-relative gaze; the picture is one eye's view, so the reticle is
+  // placed with the --gaze-fov rectangle. It is a read-out, not a headset-accurate projection.
+  const gcanvas = document.getElementById("gaze");
+  const gctx = gcanvas.getContext("2d");
+  const gbadge = document.getElementById("gazebadge");
+  const gbtn = document.getElementById("gazebtn");
+  let es = null, gazeTimer = null, sample = null, trail = [];
+  let gazeOn = localStorage.getItem("vrstream.gaze") === "1";
+
+  function sizeCanvas() {
+    const dpr = window.devicePixelRatio || 1;
+    gcanvas.width = Math.round(innerWidth * dpr);
+    gcanvas.height = Math.round(innerHeight * dpr);
+    gctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  sizeCanvas();
+  addEventListener("resize", sizeCanvas);
+
+  function videoRect() {
+    if (!v.videoWidth) return { x: 0, y: 0, w: innerWidth, h: innerHeight };   // no picture yet
+    const vw = v.videoWidth, vh = v.videoHeight;
+    const scale = Math.min(innerWidth / vw, innerHeight / vh);
+    const w = vw * scale, h = vh * scale;
+    return { x: (innerWidth - w) / 2, y: (innerHeight - h) / 2, w, h };
+  }
+
+  function draw() {
+    gctx.clearRect(0, 0, innerWidth, innerHeight);
+    if (!gazeOn) return;
+    if (sample && sample.available && typeof sample.x === "number") {
+      const r = videoRect();
+      const px = r.x + ((sample.x + 1) / 2) * r.w;
+      const py = r.y + ((1 - sample.y) / 2) * r.h;
+      trail.push([px, py]);
+      if (trail.length > 14) trail.shift();
+      trail.forEach(([tx, ty], i) => {
+        const a = (i + 1) / trail.length;
+        gctx.beginPath();
+        gctx.arc(tx, ty, 2 + 5 * a, 0, Math.PI * 2);
+        gctx.fillStyle = "rgba(110,231,183," + (0.05 + 0.18 * a) + ")";
+        gctx.fill();
+      });
+      gctx.beginPath();
+      gctx.arc(px, py, 9, 0, Math.PI * 2);
+      gctx.strokeStyle = "rgba(110,231,183,.95)"; gctx.lineWidth = 2; gctx.stroke();
+      gctx.beginPath();
+      gctx.arc(px, py, 2.5, 0, Math.PI * 2);
+      gctx.fillStyle = "rgba(110,231,183,.95)"; gctx.fill();
+      gbadge.style.display = "block";
+      gbadge.textContent = "gaze " + Math.round(sample.yaw) + "° / " + Math.round(sample.pitch) +
+                           "°  lids " + sample.open_l.toFixed(2) + " " + sample.open_r.toFixed(2);
+    }
+  }
+
+  function gazeConnect() {
+    if (es) return;
+    es = new EventSource(qs("gaze.sse"));
+    es.onmessage = (ev) => {
+      try { sample = JSON.parse(ev.data); } catch (e) { return; }
+      gbtn.classList.toggle("on", !!sample.available);
+      if (!sample.available) {
+        gbadge.style.display = "block";
+        gbadge.textContent = "gaze: " + (sample.error || "no data from the eye server");
+      }
+    };
+    es.onerror = () => { sample = null; };
+  }
+
+  function gazeSet(on) {
+    gazeOn = on;
+    localStorage.setItem("vrstream.gaze", on ? "1" : "0");
+    gbtn.classList.toggle("on", on);
+    // a plain interval, not requestAnimationFrame: rAF is throttled to zero in a background tab,
+    // which is exactly where a stream like this often runs
+    if (on) { gazeConnect(); if (!gazeTimer) gazeTimer = setInterval(draw, 33); }
+    else {
+      if (gazeTimer) { clearInterval(gazeTimer); gazeTimer = null; }
+      if (es) { es.close(); es = null; }
+      sample = null; trail = [];
+      gctx.clearRect(0, 0, innerWidth, innerHeight); gbadge.style.display = "none";
+    }
+  }
+  gbtn.onclick = () => gazeSet(!gazeOn);
+  if (gazeOn) gazeSet(true);
 
   document.getElementById("stats").onclick = () => { hud.classList.toggle("on"); renderHud(); };
   document.getElementById("fs").onclick = () => {
@@ -215,6 +314,7 @@
     if (e.key === "f") document.getElementById("fs").click();
     if (e.key === "m") modeBtn.click();
     if (e.key === "c") document.body.classList.toggle("clean");
+    if (e.key === "g") gazeSet(!gazeOn);
   });
 })();
 </script>

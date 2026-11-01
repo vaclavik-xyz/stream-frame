@@ -43,10 +43,13 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
 - **Optional sound.** `--audio auto` muxes the system audio (PipeWire/Pulse monitor of the sink the
   headset plays into) into both paths as AAC — HLS and RTSP/mpv/VLC get audio; the browser WebRTC path
   stays video-only, because browsers do not play AAC over WHEP.
+- **Where the wearer looks.** The runtime's eye-tracking estimate is read from its shared-memory record
+  and published as JSON and server-sent events; the player draws a reticle on the picture. Read-only, no
+  driver, no images of the eye — only a direction and two lid values. See [docs/gaze.md](docs/gaze.md).
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
-- **Tests without hardware.** 26 unit tests for the ring parser, command builder, segment numbering,
-  HTTP routes, Range requests and shutdown behaviour — `pytest` runs with no GPU, no ffmpeg and no shm.
-- Audio: not yet. See [Limitations](#limitations).
+- **Tests without hardware.** 46 unit tests for the ring parser, eye-record parser, command builder,
+  segment numbering, HTTP routes, Range requests, event streaming and shutdown behaviour — `pytest` runs
+  with no GPU, no headset and no ffmpeg.
 
 ## Two sources: full quality, or no installation at all
 
@@ -87,9 +90,11 @@ Details, manual install, environment variables: [docs/install.md](docs/install.m
 |---|---|
 | `/` | player page: WebRTC (WHEP) first, HLS on iOS or `?hls`, stats with `t`, fullscreen with `f` |
 | `/live.m3u8`, `/liveN.ts` | HLS playlist and segments (segments honour single `Range` requests) |
-| `/status` | JSON: capture fps, encoder state, restarts, bitrate, layout, RTSP/WebRTC viewers |
+| `/status` | JSON: capture fps, encoder state, restarts, bitrate, layout, viewers, gaze rate and age |
 | `/healthz` | `{"ok":true}` while the daemon lives |
 | `/wake` | starts the encoder; unauthenticated so MediaMTX `runOnDemand` can use it |
+| `/gaze` | JSON: latest gaze sample (degrees, lid values, placement in the frame) and reader health |
+| `/gaze.sse` | the same as server-sent events, one event per new estimate — `curl -N …/gaze.sse` |
 | `/log?e=…` | player telemetry, appended to `/tmp/vrstreamd-client.log` |
 
 ```bash
@@ -106,6 +111,9 @@ curl -s http://<host>:8101/status | python3 -m json.tool
 --rtsp-url rtsp://127.0.0.1:8554/vr    ('' = HLS only)
 --audio auto                                   mux system audio as AAC (default: off)
 --source ring|v4l2:/dev/video99                capture from the layer or from a video node
+--gaze auto|off|<path>                         read the eye server (default auto); see docs/gaze.md
+--gaze-shm /dev/shm/eye-server.mmap            where that record lives
+--gaze-fov 100x90                              degrees the flat picture covers, for the reticle
 --token <secret>      --bind 0.0.0.0    --port 8101     -v
 ```
 
@@ -129,7 +137,11 @@ what this project deliberately is not: [docs/prior-art.md](docs/prior-art.md).
   per-application stream, and it is silent on the browser WebRTC path (AAC is not a WebRTC codec).
 - **One streamer per machine.** The ring name is fixed; a lock file stops a second daemon (two would
   fight over the playlist and the encoder).
-- **No input, no control.** Read-only by design — nothing in the stream can drive the headset.
+- **No input, no control.** Read-only by design — nothing in the stream can drive the headset. Gaze is
+  read-only in the same way: it is published for display, not fed back into the runtime.
+- **Gaze is approximate and new.** The reticle places `yaw`/`pitch` inside the picture using a FOV you
+  declare (`--gaze-fov`); it is not a calibrated projection, and the parser has only been exercised
+  against a synthetic record so far — see [docs/gaze.md](docs/gaze.md#honest-status).
 - **HLS is the stable path, WebRTC is the fast one.** They fail independently, on purpose.
 
 ## License

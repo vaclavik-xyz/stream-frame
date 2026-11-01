@@ -69,6 +69,15 @@ Roughly 1.5 % of compositor frame time at 1440×1440.
 The daemon behaves the same in both modes (on demand, supervised, idle stop, tee to HLS + RTSP); only the
 `fps` metric comes from a different place — sampled from the ring, or read from ffmpeg's `-progress` file.
 
+## Gaze (optional, orthogonal to the source)
+
+A second reader thread polls `/dev/shm/eye-server.mmap` — the eye server's own record — using the
+sequence counter as a seqlock, keeps the latest sample and a short history, and stamps it with a
+`time.monotonic()` value taken on the same clock as everything else in the daemon. It never touches the
+encoder: `/gaze` and `/gaze.sse` are read-only views served by the same HTTP thread pool, so a broken eye
+server costs a reticle, never the stream. If the file disappears (SteamVR restart) the reader re-opens by
+inode rather than holding an unlinked mapping.
+
 ## Encoder
 
 `ffmpeg` is fed raw BGRA on stdin at a fixed 60 fps: the newest ring frame is re-sent if the compositor

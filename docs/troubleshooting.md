@@ -121,6 +121,30 @@ device, not the encoder. And this source is the *composited* headset view (one f
 `--layout mono-flat` would crop and unwarp something that is already correct; the daemon therefore defaults
 to `passthrough` in this mode.
 
+## The gaze reticle never appears
+
+`/status` says what the reader thinks:
+
+```bash
+curl -s localhost:8101/status | python3 -c "import json,sys; print(json.load(sys.stdin)['gaze'])"
+curl -s localhost:8101/gaze | python3 -m json.tool
+```
+
+- `enabled: false` — `--gaze off`, or `/dev/shm/eye-server.mmap` does not exist yet (it appears when the
+  runtime and the eye server are up; not while SteamVR is starting).
+- `available: false` with an `error` — the file exists but the reader refused it: `unsupported eye
+  shared-memory version N` (layout changed — fix the offsets in `server/gaze.py`), `not initialized yet`
+  (read a moment later), or `needs N bytes`.
+- `available: true` but the reticle sits still — no new estimates. Wear the headset: tracking pauses when
+  it is off the head. `age` climbing is the giveaway.
+- `available: true`, `rate` around 0 — the eye server is not publishing even though the record is valid;
+  this daemon pokes `metadata_requested` on every poll, so the request is not the problem.
+- The reticle is in the wrong place — `--gaze-fov` describes how many degrees the flat picture covers.
+  Narrow it (e.g. `80x70`) if the dot runs ahead of your eyes at the edges, widen it if it lags behind.
+
+And the honest one: this path has not yet been run against a live eye server on hardware. If the numbers
+never move, check `version` in `/status` first.
+
 ## Turning on `--token`
 
 `--token` guards the HTTP side only (`/`, `/live.m3u8`, `.ts`, `/status`); `/healthz`, `/log` and `/wake`

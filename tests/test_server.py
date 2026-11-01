@@ -2,6 +2,7 @@
 import json
 import os
 import signal
+import socket
 import struct
 import subprocess
 import sys
@@ -483,3 +484,61 @@ def test_device_session_reports_missing_node(tmp_path, monkeypatch):
             break
     assert "source device missing" in enc.last_error
     enc.shutdown()
+
+
+# --------------------------------------------------------------------- gaze
+
+
+class FakeGaze:
+    def info(self):
+        return {"available": True, "path": "/dev/shm/eye-server.mmap", "version": 4, "rate": 120.0,
+                "samples": 10, "torn_reads": 0, "age": 0.01, "error": ""}
+
+    def latest(self):
+        return {"t": 1.0, "sample_time": 5.0, "yaw": 25.0, "pitch": -45.0,
+                "yaw_l": 0.0, "pitch_l": 0.0, "yaw_r": 0.0, "pitch_r": 0.0,
+                "open_l": 0.7, "open_r": 0.75, "fixation": [0.0, 0.0, -1.0]}
+
+
+def test_gaze_route_is_honest_when_disabled(server, monkeypatch):
+    base, _, _ = server
+    monkeypatch.setattr(vs.Handler, "gaze", None)
+    code, body, _ = get(base + "/gaze")
+    payload = json.loads(body)
+    assert code == 200 and payload["available"] is False and payload["error"] == "gaze off"
+
+
+def test_gaze_route_maps_angles_into_the_flat_image(server, monkeypatch):
+    base, cfg, _ = server
+    cfg.gaze_fov = "100x90"
+    monkeypatch.setattr(vs.Handler, "gaze", FakeGaze())
+    code, body, _ = get(base + "/gaze")
+    payload = json.loads(body)
+    assert code == 200 and payload["available"] is True
+    assert payload["fov"] == [100.0, 90.0]
+    assert payload["x"] == pytest.approx(0.5)      # 25 deg of a 50 deg half-FOV
+    assert payload["y"] == pytest.approx(-1.0)     # clamped at the bottom edge
+    code, body, _ = get(base + "/status")
+    assert json.loads(body)["gaze"]["available"] is True
+
+
+def test_gaze_sse_emits_one_event(server, monkeypatch):
+    """Read the event stream off a raw socket: no proxy, no urllib buffering in the way."""
+    base, _, _ = server
+    monkeypatch.setattr(vs.Handler, "gaze", FakeGaze())
+    host, port = base.replace("http://", "").split(":")
+    with socket.create_connection((host, int(port)), timeout=5) as sock:
+        sock.sendall(b"GET /gaze.sse HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n")
+        buf, deadline = b"", time.time() + 5
+        while time.time() < deadline and b'"yaw":25.0' not in buf:
+            try:
+                part = sock.recv(512)
+            except TimeoutError:
+                break
+            if not part:
+                break
+            buf += part
+    text = buf.decode(errors="replace")
+    assert "HTTP/1.1 200" in text
+    assert "text/event-stream" in text
+    assert "retry: 1000" in text and '"yaw":25.0' in text
