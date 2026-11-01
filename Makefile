@@ -41,7 +41,7 @@ test:
 	$(PY) -m pytest -q tests
 
 lint:
-	$(PY) -m ruff check server tests || true
+	$(PY) -m ruff check server tests
 	$(PY) -m py_compile server/streamframe.py server/settings.py server/gaze.py server/hotspot.py server/clip.py
 
 # ---------------------------------------------------------------- install

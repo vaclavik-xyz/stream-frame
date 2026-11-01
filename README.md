@@ -134,7 +134,7 @@ locally: poking the panel in dev cannot restart the stream someone is watching.
 | `/` | player page: WebRTC (WHEP) first, HLS on iOS or `?hls`, stats with `t`, fullscreen with `f` |
 | `/live.m3u8`, `/liveN.ts` | HLS playlist and segments (segments honour single `Range` requests) |
 | `/status` | JSON: capture fps, encoder state, restarts, bitrate, layout, viewers, gaze rate and age |
-| `/healthz` | `{"ok":true}` while the daemon lives |
+| `/healthz` | `{"ok":true,"version":"0.1.0"}` while the daemon lives |
 | `/wake` | starts the encoder; unauthenticated so MediaMTX `runOnDemand` can use it |
 | `/gaze` | JSON: latest gaze sample (degrees, lid values, placement in the frame) and reader health |
 | `/gaze.sse` | the same as server-sent events, one event per new estimate — `curl -N …/gaze.sse` |
@@ -161,6 +161,7 @@ curl -s http://<host>:8101/status | python3 -m json.tool
 --hls-time 2          --hls-window 8    --idle 120
 --rtsp-url rtsp://127.0.0.1:8554/vr    ('' = HLS only)
 --audio auto                                   mux system audio (AAC + Opus; default: off)
+--version                                      print the version and exit
 --source ring|v4l2:/dev/video99                capture from the layer or from a video node
 --gaze auto|off|<path>                         read the eye server (default auto); see docs/gaze.md
 --gaze-shm /dev/shm/eye-server.mmap            where that record lives

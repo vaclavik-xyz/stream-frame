@@ -4,7 +4,10 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the versioning is
 [semantic](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-11-01
+
+First release. The tool does what it was written to do: a headset's picture and
+sound on another screen, over the network, with no capture card.
 
 ### Added
 
@@ -14,19 +17,6 @@ All notable changes to this project are documented here. The format follows
 - The player starts muted (browsers refuse to autoplay audio) and unmutes on the
   first tap anywhere; a speaker button and the `a` key toggle it, remembered across
   loads.
-
-### Changed
-
-- `--audio` also accepts a file or `lavfi:<graph>`, so the audio path can be tested
-  without a sound server.
-
-## [0.1.0] - 2026-11-01
-
-First release. The tool does what it was written to do: a headset's picture and
-sound on another screen, over the network, with no capture card.
-
-### Added
-
 - A Vulkan implicit layer that hooks `vkQueuePresentKHR` and copies each presented
   frame into a three-slot shared-memory ring, downscaled to a configurable width.
 - A dependency-free Python daemon that reads the ring and encodes it with ffmpeg
@@ -73,6 +63,8 @@ sound on another screen, over the network, with no capture card.
   frames on this GPU.
 - A pipeline that is already producing frames is trusted immediately, so a
   settings change returns in well under a second.
+- `--audio` also takes a file or `lavfi:<graph>`, so the audio path can be
+  exercised without a sound server (the end-to-end test uses a sine tone).
 
 ### Fixed
 

@@ -1,6 +1,7 @@
 """Unit tests for the daemon — no GPU, no ffmpeg, no shared memory required."""
 import json
 import os
+import re
 import signal
 import socket
 import struct
@@ -290,6 +291,23 @@ def test_healthz(server):
     base, _, _ = server
     code, body, _ = get(base + "/healthz")
     assert code == 200 and json.loads(body)["ok"] is True
+    assert json.loads(body)["version"] == vs.VERSION
+
+
+def test_version_tracks_changelog():
+    """The number a bug report quotes has to be the number in the changelog."""
+    released = re.findall(r"^## \[([0-9]+\.[0-9]+\.[0-9]+)\]",
+                          (ROOT / "CHANGELOG.md").read_text(), re.M)
+    assert released, "no released version in CHANGELOG.md"
+    assert released[0] == vs.VERSION, f"CHANGELOG says {released[0]}, code says {vs.VERSION}"
+
+
+def test_version_flag(capsys):
+    try:
+        vs.build_config(["--version"])
+    except SystemExit as exc:
+        assert exc.code == 0
+    assert capsys.readouterr().out.strip() == f"streamframe {vs.VERSION}"
 
 
 def test_status_payload(server):

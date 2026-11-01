@@ -48,6 +48,8 @@ from gaze import EyeSource, GazeRecorder
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
+VERSION = "0.1.0"   # keep in step with the top of CHANGELOG.md
+
 # ring buffer written by the Vulkan layer (see docs/architecture.md)
 HDR = 64
 SLOTS = 3
@@ -1219,7 +1221,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = url.path
 
         if path == "/healthz":
-            self._json({"ok": True}, head=head)
+            self._json({"ok": True, "version": VERSION}, head=head)
             return
         if path == "/log":
             if not self._authorized(query):
@@ -1614,6 +1616,7 @@ def watchdog(cfg: Config, enc: Encoder, ring: FrameRing) -> None:
 
 def build_config(argv=None) -> Config:
     ap = argparse.ArgumentParser(description="VR compositor live stream (HLS + RTSP/WebRTC)")
+    ap.add_argument("--version", action="version", version=f"streamframe {VERSION}")
     ap.add_argument("--port", type=int, default=int(_env("PORT", 8101)))
     ap.add_argument("--bind", default=_env("BIND", "0.0.0.0"))
     ap.add_argument("--fps", type=int, default=60)
