@@ -1019,6 +1019,7 @@
   // only with a mouse. Left/right moves, A presses, up/down is volume, B steps back.
   const padSeen = new Set();
   const latched = {};
+  const padLast = {};
   const padName = {0: "A", 1: "B", 2: "X", 3: "Y", 12: "up", 13: "down", 14: "left", 15: "right"};
   let padSel = -1;
 
@@ -1064,25 +1065,34 @@
   }
   function padPoll() {
     const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    // Held is collected across every pad first. The physical pad and Steam's virtual mirror
+    // are not in step: one reports pressed while the other reports released, and a latch that
+    // cleared on the released copy let the pressed copy fire again on the next tick. Read the
+    // whole set, then decide once - that is what stops the selection from spinning.
+    const held = {};
     for (const gp of pads) {
       if (!gp || !gp.connected) continue;
       if (!padSeen.has(gp.id)) {
-        // one beacon per pad: this is how we find out whether a pad reaches the page at all
         padSeen.add(gp.id);
         fetch(qs("log?e=" + encodeURIComponent("pad: " + gp.id + " buttons=" + gp.buttons.length))).catch(() => {});
       }
       gp.buttons.forEach((btn, i) => {
         const name = padName[i];
-        if (!name) return;
-        const held = btn.pressed || btn.value > 0.5;
-        if (held && !latched[name]) {
-          latched[name] = true;
-          padAct(name);
-          fetch(qs("log?e=pad-action:" + name)).catch(() => {});
-        } else if (!held) {
-          latched[name] = false;
-        }
+        if (name && (btn.pressed || btn.value > 0.5)) held[name] = true;
       });
+    }
+    const now = performance.now();
+    for (const name of Object.values(padName)) {
+      if (held[name] && !latched[name]) {
+        latched[name] = true;
+        const last = padLast[name] || 0;
+        if (now - last < 120) continue;          // runaway protection
+        padLast[name] = now;
+        padAct(name);
+        fetch(qs("log?e=pad-action:" + name)).catch(() => {});
+      } else if (!held[name]) {
+        latched[name] = false;
+      }
     }
   }
   // Neither requestAnimationFrame nor setInterval survives a tab that the browser decides is
