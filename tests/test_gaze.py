@@ -116,3 +116,61 @@ def test_angle_helpers():
     assert pitch == pytest.approx(math.degrees(math.atan2(1, 1)))
     assert gaze._norm_axis(50.0, 50.0) == 1.0 and gaze._norm_axis(-80.0, 50.0) == -1.0
     assert gaze._norm_axis(10.0, 0.0) == 0.0
+
+
+# ------------------------------------------------------------------ recording
+
+
+def test_recorder_writes_a_header_then_rows(tmp_path):
+    path = tmp_path / "gaze.csv"
+    rec = gaze.GazeRecorder(str(path), flush_every=1)
+    assert rec.start() is True
+    rec.write({"t": 10.5, "yaw": 12.25, "pitch": -3.5, "yaw_l": 12.0, "pitch_l": -3.0,
+               "yaw_r": 12.5, "pitch_r": -4.0, "open_l": 0.71, "open_r": 0.69})
+    rec.stop()
+    lines = [ln for ln in path.read_text().splitlines() if not ln.startswith("#")]
+    assert lines[0].split(",") == list(gaze.GazeRecorder.COLUMNS)
+    cols = lines[1].split(",")
+    assert len(cols) == len(gaze.GazeRecorder.COLUMNS)
+    assert cols[2] == "12.25" and cols[3] == "-3.5" and cols[8] == "0.71"
+    assert cols[0].startswith("20") and ("+" in cols[0] or "-" in cols[0][19:])   # wall clock with offset
+
+
+def test_recorder_appends_a_session_line_and_keeps_old_rows(tmp_path):
+    path = tmp_path / "gaze.csv"
+    sample = {"t": 1.0, "yaw": 0.0, "pitch": 0.0, "yaw_l": 0.0, "pitch_l": 0.0,
+              "yaw_r": 0.0, "pitch_r": 0.0, "open_l": 0.5, "open_r": 0.5}
+    for _ in range(2):
+        rec = gaze.GazeRecorder(str(path))
+        assert rec.start()
+        rec.write(sample)
+        rec.stop()
+    text = path.read_text()
+    assert text.count("t_wall,t_mono") == 1                    # header written once
+    assert text.count("# session ") == 2
+    assert text.count(",1.0000,") == 2
+
+
+def test_recorder_reports_a_bad_path_instead_of_raising(tmp_path):
+    rec = gaze.GazeRecorder(str(tmp_path / "missing-dir" / "x.csv"))
+    rec.path = "/proc/definitely/not/writable.csv"
+    assert rec.start() is False
+    assert rec.error
+    rec.write({"t": 1, "yaw": 0, "pitch": 0, "yaw_l": 0, "pitch_l": 0, "yaw_r": 0, "pitch_r": 0,
+               "open_l": 0, "open_r": 0})                      # no writer: a no-op, not a crash
+
+
+def test_source_calls_the_recorder_once_per_new_sample(tmp_path):
+    p = build(str(tmp_path / "eye.mmap"))
+    rows = []
+    src = gaze.EyeSource(p, poll_hz=200, on_sample=rows.append)
+    assert src.start()
+    try:
+        for _ in range(50):
+            time.sleep(0.02)
+            if rows:
+                break
+    finally:
+        src.stop()
+    assert len(rows) == 1                                      # the fixture never changes sample_time
+    assert rows[0]["yaw"] == pytest.approx(0.0, abs=0.01)

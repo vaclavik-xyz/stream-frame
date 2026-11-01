@@ -67,8 +67,9 @@ class EyeSource:
     """Latest gaze sample from the eye server, refreshed by a small polling thread."""
 
     def __init__(self, path: str = "/dev/shm/eye-server.mmap", poll_hz: float = 120.0,
-                 history: int = 600):
+                 history: int = 600, on_sample=None):
         self.path = path
+        self.on_sample = on_sample        # called from the polling thread, after a sample is stored
         self.period = 1.0 / max(1.0, poll_hz)
         self.history_len = max(1, history)
         self.error = ""
@@ -213,12 +214,18 @@ class EyeSource:
             sample = self._read_once()
             if sample is not None:
                 with self._lock:
-                    if self._latest is None or sample["sample_time"] != self._latest["sample_time"]:
+                    fresh = self._latest is None or sample["sample_time"] != self._latest["sample_time"]
+                    if fresh:
                         self._latest = sample
                         self._count += 1
                         self._samples.append(sample)
                         if len(self._samples) > self.history_len:
                             del self._samples[: len(self._samples) - self.history_len]
+                if fresh and self.on_sample is not None:
+                    try:
+                        self.on_sample(sample)
+                    except Exception:            # a bad recorder must never stop the eye reader
+                        pass
             self._poke()
             self._stop.wait(self.period)
 
@@ -248,6 +255,91 @@ class EyeSource:
             "age": age,
             "error": self.error,
         }
+
+
+class GazeRecorder:
+    """Append every estimate to a CSV, so a recording of the video can be lined up with the eyes.
+
+    Wall-clock timestamps (not just the monotonic clock) are the join key: HLS segments and MP4 files
+    carry their own mtime, and this is what makes "what was he looking at in minute four" answerable
+    without rewriting the video. At 60–120 Hz the file grows by roughly 20–25 MB per hour.
+    """
+
+    COLUMNS = ("t_wall", "t_mono", "yaw", "pitch", "yaw_l", "pitch_l", "yaw_r", "pitch_r",
+               "open_l", "open_r")
+
+    def __init__(self, path: str, flush_every: int = 60):
+        self.path = path
+        self.flush_every = max(1, flush_every)
+        self.error = ""
+        self.samples = 0
+        self._fh = None
+        self._pending = 0
+
+    def start(self) -> bool:
+        try:
+            parent = os.path.dirname(self.path)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
+            new = not os.path.exists(self.path) or os.path.getsize(self.path) == 0
+            self._fh = open(self.path, "a", encoding="utf-8", newline="")
+            if new:
+                self._fh.write("t_wall,t_mono,yaw,pitch,yaw_l,pitch_l,yaw_r,pitch_r,open_l,open_r\n")
+            self._fh.write(f"# session {time.strftime('%Y-%m-%dT%H:%M:%S%z')}\n")
+            self._fh.flush()
+            return True
+        except OSError as exc:
+            self.error = f"{self.path}: {exc.strerror or exc}"
+            self._fh = None
+            return False
+
+    def write(self, sample: dict) -> None:
+        if self._fh is None:
+            return
+        wall = time.time()
+        row = (
+            time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(wall))
+            + f".{int(wall % 1 * 1000):03d}"
+            + time.strftime("%z", time.localtime(wall)),
+            f"{sample['t']:.4f}", sample["yaw"], sample["pitch"],
+            sample["yaw_l"], sample["pitch_l"], sample["yaw_r"], sample["pitch_r"],
+            sample["open_l"], sample["open_r"],
+        )
+        try:
+            self._fh.write(",".join(str(v) for v in row) + "\n")
+        except OSError as exc:
+            self.error = f"write failed: {exc.strerror or exc}"
+            return
+        self.samples += 1
+        self._pending += 1
+        if self._pending >= self.flush_every:      # short bursts of writes, not one fsync per sample
+            self._flush()
+
+    def _flush(self) -> None:
+        self._pending = 0
+        if self._fh is not None:
+            try:
+                self._fh.flush()
+            except OSError as exc:
+                self.error = f"flush failed: {exc.strerror or exc}"
+
+    def stop(self) -> None:
+        self._flush()
+        if self._fh is not None:
+            try:
+                self._fh.close()
+            except OSError:
+                pass
+            self._fh = None
+
+    def info(self) -> dict:
+        size = 0
+        try:
+            size = os.path.getsize(self.path)
+        except OSError:
+            pass
+        return {"enabled": self._fh is not None or self.samples > 0, "path": self.path,
+                "samples": self.samples, "bytes": size, "error": self.error}
 
 
 def _main(argv: list[str]) -> int:

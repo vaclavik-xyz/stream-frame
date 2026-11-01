@@ -40,7 +40,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlparse
 
-from gaze import EyeSource
+from gaze import EyeSource, GazeRecorder
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -112,6 +112,7 @@ class Config:
     gaze: str = "auto"                 # off | auto (when the eye server exists) | path
     gaze_shm: str = "/dev/shm/eye-server.mmap"
     gaze_fov: str = "100x90"           # approximate, only used to place the reticle
+    gaze_csv: str = ""                 # "" = no recording, "auto" = <hls_dir>/gaze.csv, or a path
     shm: str = "/dev/shm/vrstream_frames"
     hls_dir: str = "/tmp/vrstream-hls"
     hls_time: int = 2
@@ -141,6 +142,17 @@ class Config:
             return None
         if mode in ("auto", "on", "yes", "1"):
             return self.gaze_shm if os.path.exists(self.gaze_shm) else None
+        return mode
+
+    def gaze_csv_path(self) -> str | None:
+        """Where gaze samples are appended, or None when recording is off."""
+        mode = (self.gaze_csv or "").strip()
+        if mode in ("", "off", "0", "no"):
+            return None
+        if mode in ("auto", "on", "yes", "1"):
+            return os.path.join(self.hls_dir, "gaze.csv")
+        if os.path.isdir(mode):
+            return os.path.join(mode, "gaze.csv")
         return mode
 
     def gaze_fov_pair(self) -> tuple[float, float]:
@@ -650,6 +662,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     enc: Encoder
     ring: FrameRing
     gaze: EyeSource | None = None
+    gaze_rec: GazeRecorder | None = None
 
     def __init__(self, *a, **kw):
         super().__init__(*a, directory=self.cfg.hls_dir, **kw)
@@ -804,9 +817,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if path == "/status":
             # in ring mode capture fps is sampled from the ring; a device is measured by ffmpeg
             fps = self.enc.encoder_fps() if self.cfg.v4l2_device() else self.ring.fps()
-            gaze = {"enabled": self.gaze is not None}
+            gaze: dict = {"enabled": self.gaze is not None}
             if self.gaze is not None:
                 gaze.update(self.gaze.info())
+            if self.gaze_rec is not None:
+                gaze["csv"] = self.gaze_rec.info()
             self._json({"fps": round(fps, 1), "gaze": gaze, **self.enc.status()}, head=head)
             return
         if path == "/gaze":
@@ -814,6 +829,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if path == "/gaze.sse":
             self._gaze_stream()
+            return
+        if path == "/gaze.csv":
+            self._gaze_file(head)
             return
         if path in ("/", "/index.html"):
             self._page(head)
@@ -858,6 +876,37 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             "x": round(norm(sample["yaw"], half_h), 4),
             "y": round(norm(sample["pitch"], half_v), 4),
         }
+
+    def _gaze_file(self, head: bool = False) -> None:
+        """Serve the recording so far — a snapshot download, not a tail."""
+        rec = self.gaze_rec
+        path = rec.path if rec is not None else None
+        if not path or not os.path.exists(path):
+            self._json({"error": "no gaze recording (start with --gaze-csv auto)"}, code=404)
+            return
+        try:
+            fh = open(path, "rb")
+        except OSError as exc:
+            self._json({"error": f"cannot read {path}: {exc.strerror or exc}"}, code=500)
+            return
+        with fh:
+            size = os.fstat(fh.fileno()).st_size
+            self.send_response(200)
+            self.send_header("Content-Type", "text/csv; charset=utf-8")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Disposition", 'attachment; filename="gaze.csv"')
+            self.end_headers()
+            if head:
+                return
+            while True:
+                chunk = fh.read(65536)
+                if not chunk:
+                    break
+                try:
+                    self._send(chunk)
+                except (BrokenPipeError, ConnectionResetError):
+                    return
 
     def _gaze_json(self, head: bool = False) -> None:
         self._json(self._gaze_payload(), head=head)
@@ -1040,6 +1089,8 @@ def build_config(argv=None) -> Config:
                     help='eye tracking: "auto" (when /dev/shm/eye-server.mmap exists), "off", or a path')
     ap.add_argument("--gaze-shm", default=os.environ.get("VRSTREAM_GAZE_SHM",
                                                          "/dev/shm/eye-server.mmap"))
+    ap.add_argument("--gaze-csv", default=os.environ.get("VRSTREAM_GAZE_CSV", ""),
+                    help='append every gaze sample to a CSV: "auto" = <hls-dir>/gaze.csv, or a path')
     ap.add_argument("--gaze-fov", default=os.environ.get("VRSTREAM_GAZE_FOV", "100x90"),
                     help="horizontal x vertical degrees the flat image covers, for reticle placement")
     ap.add_argument("--source", default=os.environ.get("VRSTREAM_SOURCE", "ring"),
@@ -1100,10 +1151,19 @@ def main(argv=None) -> int:
     ring.open()
     enc = Encoder(cfg, ring)
 
-    gaze_src = None
+    gaze_src = gaze_rec = None
     gaze_path = cfg.gaze_source()
     if gaze_path:
         gaze_src = EyeSource(gaze_path)
+        csv_path = cfg.gaze_csv_path()
+        if csv_path:
+            gaze_rec = GazeRecorder(csv_path)
+            if gaze_rec.start():
+                gaze_src.on_sample = gaze_rec.write
+                log(f"gaze: recording to {csv_path}")
+            else:
+                log(f"gaze: cannot record — {gaze_rec.error}")
+                gaze_rec = None
         if gaze_src.start():
             log(f"gaze: reading {gaze_path} (abi {gaze_src.version})")
         else:
@@ -1112,7 +1172,8 @@ def main(argv=None) -> int:
     elif cfg.gaze not in ("off", "", "0", "no"):
         log(f"gaze: {cfg.gaze_shm} not present, reticle stays off")
 
-    Handler.cfg, Handler.enc, Handler.ring, Handler.gaze = cfg, enc, ring, gaze_src
+    Handler.cfg, Handler.enc, Handler.ring = cfg, enc, ring
+    Handler.gaze, Handler.gaze_rec = gaze_src, gaze_rec
     srv = Server((cfg.bind, cfg.port), Handler)
 
     threading.Thread(target=watchdog, args=(cfg, enc), daemon=True).start()
@@ -1126,6 +1187,8 @@ def main(argv=None) -> int:
         enc.shutdown()
         if gaze_src is not None:
             gaze_src.stop()
+        if gaze_rec is not None:
+            gaze_rec.stop()
         # shutdown() waits for serve_forever() to return: calling it from this thread deadlocks
         threading.Thread(target=srv.shutdown, daemon=True).start()
 

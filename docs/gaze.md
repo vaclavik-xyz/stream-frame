@@ -43,6 +43,35 @@ is a working client.
 - `age` — seconds since the last new estimate. Eye tracking pauses when the headset is off the head, and
   a growing age is how you see that.
 
+## Recording it next to the video
+
+```bash
+python3 server/vrstreamd.py --gaze-csv auto        # <hls-dir>/gaze.csv
+python3 server/vrstreamd.py --gaze-csv ~/run1/     # a directory: gaze.csv inside it
+python3 server/vrstreamd.py --gaze-csv ~/run1/eyes.csv
+```
+
+One row per new estimate, append-only:
+
+```
+t_wall,t_mono,yaw,pitch,yaw_l,pitch_l,yaw_r,pitch_r,open_l,open_r
+# session 2026-11-01T01:16:51+0100
+2026-11-01T01:16:51.541+0100,2003592.8030,16.7,-11.31,0.0,0.0,0.0,0.0,0.68,0.74
+```
+
+`t_wall` is the join key: HLS segments and any MP4 carry their own mtime, so a recording can be lined up
+with the eyes afterwards without touching the video. `t_mono` is for gaps inside a session, where the
+wall clock can jump (NTP). A `# session …` line marks every daemon start, so rows from different runs stay
+separable; `grep -v '^#'` or `pandas.read_csv(..., comment='#')` handles them.
+
+- Size: roughly 20–25 MB per hour at 60–120 Hz. It is off by default for that reason.
+- Durability: flushed every 60 samples (~half a second) and on shutdown, so a crash costs about a second.
+- Download the recording so far with `curl -O -J http://<host>:8101/gaze.csv` — it is a snapshot of the
+  file, not a live tail.
+- The recorder is attached to the reader in the daemon, not to the encoder: gaze rows keep coming while
+  the video is stalled, and vice versa the stream survives a recorder that cannot write (the reason lands
+  in `/status` under `gaze.csv.error`).
+
 ## How the read works
 
 The file is a header and one record:

@@ -46,8 +46,10 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
 - **Where the wearer looks.** The runtime's eye-tracking estimate is read from its shared-memory record
   and published as JSON and server-sent events; the player draws a reticle on the picture. Read-only, no
   driver, no images of the eye — only a direction and two lid values. See [docs/gaze.md](docs/gaze.md).
+- **Gaze as data, not just a dot.** `--gaze-csv auto` appends every estimate to a CSV with wall-clock
+  timestamps, so a recording of the video can be lined up with where the wearer was looking.
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
-- **Tests without hardware.** 46 unit tests for the ring parser, eye-record parser, command builder,
+- **Tests without hardware.** 50 unit tests for the ring parser, eye-record parser, command builder,
   segment numbering, HTTP routes, Range requests, event streaming and shutdown behaviour — `pytest` runs
   with no GPU, no headset and no ffmpeg.
 
@@ -95,6 +97,7 @@ Details, manual install, environment variables: [docs/install.md](docs/install.m
 | `/wake` | starts the encoder; unauthenticated so MediaMTX `runOnDemand` can use it |
 | `/gaze` | JSON: latest gaze sample (degrees, lid values, placement in the frame) and reader health |
 | `/gaze.sse` | the same as server-sent events, one event per new estimate — `curl -N …/gaze.sse` |
+| `/gaze.csv` | download the gaze recording so far (needs `--gaze-csv`) |
 | `/log?e=…` | player telemetry, appended to `/tmp/vrstreamd-client.log` |
 
 ```bash
@@ -114,6 +117,7 @@ curl -s http://<host>:8101/status | python3 -m json.tool
 --gaze auto|off|<path>                         read the eye server (default auto); see docs/gaze.md
 --gaze-shm /dev/shm/eye-server.mmap            where that record lives
 --gaze-fov 100x90                              degrees the flat picture covers, for the reticle
+--gaze-csv auto|<dir>|<file>                   append gaze samples to a CSV (default: off)
 --token <secret>      --bind 0.0.0.0    --port 8101     -v
 ```
 
