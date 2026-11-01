@@ -6,109 +6,211 @@
 <meta name="theme-color" content="#0b0b0f">
 <title>Stream Frame — live VR view</title>
 <style>
-  :root { color-scheme: dark; --fg:#e8e8ef; --dim:#8a8a98; --accent:#6ee7b7; }
+  :root { color-scheme: dark;
+    --fg:#e9eaf0; --dim:#9aa0ad; --faint:#6f7583;
+    --accent:#7fe3bb; --accent-soft:rgba(127,227,187,.13);
+    --rec:#fb7185; --warn:#f6ad55;
+    --glass:rgba(13,15,19,.58); --glass-solid:rgba(13,15,19,.9);
+    --stroke:rgba(255,255,255,.085); --stroke-hi:rgba(255,255,255,.16);
+    --blur:14px; --ease:cubic-bezier(.22,.7,.24,1);
+    --shadow:0 12px 34px rgba(0,0,0,.42), inset 0 1px 0 rgba(255,255,255,.045); }
   * { box-sizing: border-box; }
-  html,body { margin:0; height:100%; background:#0b0b0f; color:var(--fg);
-              font:15px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
+  html,body { margin:0; height:100%; background:#07080b; color:var(--fg); overflow:hidden;
+    font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased; text-rendering:optimizeLegibility; }
   video { position:fixed; inset:0; width:100%; height:100%; object-fit:contain; background:#000; }
-  #msg { position:fixed; left:0; right:0; bottom:calc(18px + env(safe-area-inset-bottom));
-         text-align:center; font-size:14px; color:var(--dim); pointer-events:none; }
-  #hud { position:fixed; left:12px; top:calc(12px + env(safe-area-inset-top)); padding:8px 12px;
-         border-radius:10px; background:rgba(10,10,14,.62); backdrop-filter:blur(8px);
-         font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; color:var(--dim);
-         opacity:0; transition:opacity .25s; pointer-events:none; white-space:pre; }
+  .ico { width:18px; height:18px; display:block; fill:none; stroke:currentColor; stroke-width:1.7;
+         stroke-linecap:round; stroke-linejoin:round; }
+  #gaze { position:fixed; inset:0; width:100%; height:100%; pointer-events:none; }
+
+  /* ---- the picture frame: it hugs the edges so the screen reads as a device ---- */
+  #film { position:fixed; inset:0; pointer-events:none; z-index:2;
+    background:
+      radial-gradient(125% 95% at 50% 50%, rgba(0,0,0,0) 58%, rgba(0,0,0,.32) 100%),
+      linear-gradient(to bottom, rgba(0,0,0,0) 84%, rgba(0,0,0,.34)); }
+
+  /* ---- one capsule for the numbers, so six read-outs look like one instrument ---- */
+  #chips { position:fixed; left:14px; bottom:calc(56px + env(safe-area-inset-bottom)); z-index:5;
+    display:flex; align-items:center; gap:11px; padding:7px 12px; border-radius:999px;
+    background:var(--glass); border:1px solid var(--stroke); box-shadow:var(--shadow);
+    backdrop-filter:blur(var(--blur)) saturate(1.15); -webkit-backdrop-filter:blur(var(--blur)) saturate(1.15);
+    font:11.5px/1 ui-monospace,SFMono-Regular,Menlo,monospace; font-variant-numeric:tabular-nums;
+    letter-spacing:.01em; color:#cfd3dc; pointer-events:none; max-width:calc(100% - 28px);
+    transition:opacity .5s var(--ease); opacity:.94; }
+  #chips.idle { opacity:.24; }
+  #chips > span { position:relative; display:inline-flex; align-items:center; gap:6px; white-space:nowrap; }
+  #chips > span + span::before { content:""; position:absolute; left:-5.5px; top:50%; width:1px; height:10px;
+    transform:translateY(-50%); background:var(--stroke-hi); }
+  #chips > span:empty { display:none; }
+  #chips .live b { color:var(--rec); font-weight:600; font-size:9.5px; letter-spacing:.13em; text-transform:uppercase; }
+  #chips .live i, #chips .rec i { width:6px; height:6px; border-radius:50%; background:var(--rec); }
+  #chips .live i { animation:pulse 2.6s var(--ease) infinite; }
+  #chips .rec { color:#d8b4b4; }
+  #chips .ok { color:var(--accent); }
+  #chips .late { color:var(--warn); }
+  #chips .rec i { background:#c98b8b; border-radius:2px; }
+  #chips span.off { display:none; }
+  @keyframes pulse { 0% { box-shadow:0 0 0 0 rgba(251,113,133,.5) }
+                     70% { box-shadow:0 0 0 6px rgba(251,113,133,0) }
+                     100% { box-shadow:0 0 0 0 rgba(251,113,133,0) } }
+
+  #mark { position:fixed; right:14px; bottom:calc(56px + env(safe-area-inset-bottom)); z-index:5;
+    display:flex; align-items:center; gap:7px; font:600 9.5px/1 -apple-system,BlinkMacSystemFont,sans-serif;
+    letter-spacing:.24em; text-transform:uppercase; color:#e9eaf0; opacity:.32; pointer-events:none; }
+  #mark .dot { width:5px; height:5px; border-radius:50%; background:var(--accent); opacity:.85; }
+
+  /* ---- controls: one bar, icon only, quiet until you go near it ---- */
+  #bar { position:fixed; right:12px; top:calc(12px + env(safe-area-inset-top)); z-index:6;
+    display:flex; gap:2px; padding:3px; border-radius:13px; background:var(--glass);
+    border:1px solid var(--stroke); box-shadow:var(--shadow);
+    backdrop-filter:blur(var(--blur)) saturate(1.15); -webkit-backdrop-filter:blur(var(--blur)) saturate(1.15); }
+  #bar button { width:34px; height:32px; display:grid; place-items:center; color:#dfe3ea; background:none;
+    border:0; border-radius:9px; cursor:pointer; padding:0;
+    transition:background .16s var(--ease), color .16s var(--ease), transform .12s var(--ease); }
+  #bar button:hover { background:rgba(255,255,255,.07); color:#fff; }
+  #bar button:active { transform:scale(.94); }
+  #bar button.on { color:var(--accent); background:var(--accent-soft); }
+  #bar button:focus-visible, #reveal:focus-visible, #panel button:focus-visible {
+    outline:2px solid var(--accent); outline-offset:2px; }
+
+  #reveal { position:fixed; right:14px; bottom:calc(56px + env(safe-area-inset-bottom)); z-index:8;
+    width:36px; height:36px; display:none; place-items:center; border-radius:50%; color:#cfd3dc;
+    background:var(--glass); border:1px solid var(--stroke); box-shadow:var(--shadow); cursor:pointer;
+    backdrop-filter:blur(var(--blur)); -webkit-backdrop-filter:blur(var(--blur));
+    opacity:.32; transition:opacity .2s var(--ease); }
+  #reveal:hover { opacity:1; }
+
+  #msg { position:fixed; left:50%; bottom:calc(22px + env(safe-area-inset-bottom)); transform:translateX(-50%);
+    padding:7px 13px; border-radius:999px; background:var(--glass); border:1px solid var(--stroke);
+    backdrop-filter:blur(10px); font-size:12.5px; color:var(--dim); pointer-events:none; white-space:nowrap; }
+  #msg:empty { display:none; }
+
+  #hud { position:fixed; left:12px; top:calc(12px + env(safe-area-inset-top)); padding:9px 12px;
+    border-radius:12px; background:var(--glass); border:1px solid var(--stroke); box-shadow:var(--shadow);
+    backdrop-filter:blur(var(--blur)); font:11.5px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:var(--dim); opacity:0; transition:opacity .22s var(--ease); pointer-events:none; white-space:pre; }
   #hud.on { opacity:1; }
   #hud b { color:var(--accent); font-weight:600; }
-  #bar { position:fixed; right:12px; top:calc(12px + env(safe-area-inset-top)); display:flex; gap:8px; }
-  #bar button { font:12px/1 inherit; color:var(--fg); background:rgba(10,10,14,.62);
-         border:1px solid rgba(255,255,255,.14); border-radius:9px; padding:8px 11px; cursor:pointer;
-         backdrop-filter:blur(8px); }
-  #bar button:hover { border-color:var(--accent); color:var(--accent); }
-  body.clean #bar, body.clean #hud, body.clean #msg, body.clean #gaze { display:none; }
-  #gaze { position:fixed; inset:0; width:100%; height:100%; pointer-events:none; }
-  #stale { position:fixed; left:50%; top:calc(10px + env(safe-area-inset-top)); transform:translateX(-50%);
-           background:#b45309ee; color:#fff; font:600 13px/1.4 system-ui,sans-serif; padding:6px 12px;
-           border-radius:999px; display:none; z-index:6; pointer-events:none }
-  #stale.on { display:block }
-  #gazebadge { position:fixed; left:12px; bottom:calc(12px + env(safe-area-inset-bottom));
-        font:11px/1 ui-monospace,Menlo,monospace; color:var(--dim); opacity:.85; padding:6px 9px;
-        border-radius:8px; background:rgba(10,10,14,.62); display:none; }
-  #bar button.on { border-color:var(--accent); color:var(--accent); }
 
-  /* ---- the quiet layer: it frames the picture instead of covering it ---- */
-  #film { position:fixed; inset:0; pointer-events:none; z-index:2;
-          background:
-            radial-gradient(120% 90% at 50% 50%, rgba(0,0,0,0) 55%, rgba(0,0,0,.28) 100%),
-            linear-gradient(to bottom, rgba(0,0,0,.20), rgba(0,0,0,0) 18%,
-                            rgba(0,0,0,0) 82%, rgba(0,0,0,.30)); }
-  /* above the browser's own control bar, which would otherwise sit on top of them */
-  #chips { position:fixed; left:14px; bottom:calc(56px + env(safe-area-inset-bottom)); z-index:5;
-           display:flex; gap:6px; align-items:center; flex-wrap:wrap; max-width:calc(100% - 28px);
-           font:11px/1 ui-monospace,SFMono-Regular,Menlo,monospace; letter-spacing:.02em;
-           transition:opacity .5s; opacity:.9; pointer-events:none; }
-  #chips.idle { opacity:.22; }
-  #chips span { padding:5px 8px; border-radius:7px; color:#cfcfda;
-                background:rgba(10,10,14,.52); border:1px solid rgba(255,255,255,.07);
-                backdrop-filter:blur(6px); }
-  #chips b { color:var(--accent); font-weight:600; }
-  #chips .live b { color:#f87171; }
-  #chips .live i { display:inline-block; width:6px; height:6px; margin-right:5px; border-radius:50%;
-                   background:#f87171; vertical-align:1px; animation:pulse 2.4s ease-in-out infinite; }
-  #chips .rec b { color:#fca5a5; }
-  #chips span.off { display:none; }
-  @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.25 } }
-  #mark { position:fixed; right:14px; bottom:calc(56px + env(safe-area-inset-bottom)); z-index:5;
-          font:500 11px/1 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; letter-spacing:.18em;
-          text-transform:uppercase; color:#e8e8ef; opacity:.24; pointer-events:none; }
-  body.clean #film, body.clean #chips, body.clean #mark { display:none; }
+  #stale { position:fixed; left:50%; top:calc(12px + env(safe-area-inset-top)); transform:translateX(-50%);
+    display:none; align-items:center; gap:8px; padding:7px 14px 7px 11px; border-radius:999px;
+    background:rgba(38,24,9,.88); border:1px solid rgba(246,173,85,.35); color:#fbd38d;
+    font:500 12.5px/1 -apple-system,BlinkMacSystemFont,sans-serif; box-shadow:var(--shadow);
+    backdrop-filter:blur(10px); z-index:7; pointer-events:none; }
+  #stale.on { display:flex; }
+  #stale .ico { width:15px; height:15px; color:var(--warn); }
+
+  #gazebadge { position:fixed; left:14px; bottom:calc(12px + env(safe-area-inset-bottom));
+    font:11px/1 ui-monospace,Menlo,monospace; font-variant-numeric:tabular-nums; color:var(--dim);
+    padding:6px 10px; border-radius:999px; background:var(--glass); border:1px solid var(--stroke);
+    backdrop-filter:blur(10px); display:none; }
+
+  body.clean #bar, body.clean #chips, body.clean #mark, body.clean #hud, body.clean #msg,
+  body.clean #gazebadge, body.clean #film { display:none; }
+  body.clean #reveal { display:grid; }
 
   /* ---- settings drawer ---- */
-  #panel { position:fixed; z-index:9; right:0; top:0; height:100%; width:min(360px, 92vw);
-           transform:translateX(102%); transition:transform .28s cubic-bezier(.2,.8,.2,1);
-           background:rgba(12,12,17,.92); backdrop-filter:blur(18px);
-           border-left:1px solid rgba(255,255,255,.09); padding:calc(16px + env(safe-area-inset-top))
-           16px calc(16px + env(safe-area-inset-bottom)); overflow-y:auto;
-           font:13px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+  #panel { position:fixed; z-index:9; right:0; top:0; height:100%; width:min(380px, 94vw);
+    display:flex; flex-direction:column; transform:translateX(102%);
+    transition:transform .3s var(--ease);
+    background:var(--glass-solid); backdrop-filter:blur(22px) saturate(1.1);
+    border-left:1px solid var(--stroke); box-shadow:-24px 0 60px rgba(0,0,0,.45);
+    border-radius:18px 0 0 18px;
+    font:13px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif; }
   #panel.on { transform:none; }
-  #panel h2 { margin:0 0 2px; font-size:15px; font-weight:600; letter-spacing:.01em; }
-  #panel p.hint { margin:0 0 14px; color:var(--dim); font-size:11.5px; }
-  #panel .row { margin:0 0 13px; }
-  #panel .row label { display:flex; justify-content:space-between; gap:10px; color:#c9c9d4;
-                      font-size:12px; margin-bottom:5px; }
-  #panel .row label output { color:var(--accent); font:12px ui-monospace,Menlo,monospace; }
-  #panel input[type=range] { width:100%; accent-color:var(--accent); }
-  #panel select, #panel input[type=number] { width:100%; background:rgba(255,255,255,.05);
-        color:var(--fg); border:1px solid rgba(255,255,255,.12); border-radius:8px; padding:7px 8px;
-        font:12px inherit; }
+  #panel .phead { display:flex; align-items:flex-start; justify-content:space-between; gap:12px;
+    padding:calc(18px + env(safe-area-inset-top)) 18px 12px; }
+  #panel h2 { margin:0 0 4px; font-size:15px; font-weight:600; letter-spacing:-.01em; }
+  #panel p.hint { margin:0; color:var(--dim); font-size:11.5px; line-height:1.45; max-width:34ch; }
+  #panel button.x { flex:0 0 auto; width:30px; height:30px; display:grid; place-items:center; padding:0;
+    color:var(--dim); background:rgba(255,255,255,.04); border:1px solid var(--stroke);
+    border-radius:9px; cursor:pointer; }
+  #panel button.x:hover { color:var(--fg); background:rgba(255,255,255,.09); }
+  #panel-body { flex:1; overflow-y:auto; padding:0 18px 8px; }
+  #panel .sec { margin:16px 0 8px; font:600 9.5px/1 -apple-system,sans-serif; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--faint); }
+  #panel .sec:first-child { margin-top:2px; }
+  #panel .row { margin:0 0 14px; }
+  #panel .row label { display:flex; align-items:center; justify-content:space-between; gap:10px;
+    color:#c9ccd5; font-size:12px; margin-bottom:6px; }
+  #panel .row label output { color:var(--accent); font:11px/1 ui-monospace,Menlo,monospace;
+    font-variant-numeric:tabular-nums; padding:3px 7px; border-radius:6px; background:rgba(255,255,255,.06); }
+  #panel input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:18px;
+    background:transparent; cursor:pointer; }
+  #panel input[type=range]::-webkit-slider-runnable-track { height:3px; border-radius:2px;
+    background:rgba(255,255,255,.15); }
+  #panel input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:14px; height:14px;
+    margin-top:-5.5px; border-radius:50%; background:#fff;
+    box-shadow:0 0 0 4px rgba(127,227,187,.18), 0 1px 3px rgba(0,0,0,.5); }
+  #panel input[type=range]:active::-webkit-slider-thumb { box-shadow:0 0 0 6px rgba(127,227,187,.24); }
+  #panel select { width:100%; color:var(--fg); border:1px solid var(--stroke-hi); border-radius:9px;
+    padding:9px 30px 9px 10px; font:12px inherit; cursor:pointer; -webkit-appearance:none;
+    appearance:none; background:rgba(255,255,255,.05)
+      url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%239aa0ad' stroke-width='2.2' stroke-linecap='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E")
+      no-repeat right 10px center; }
   #panel .toggle { display:flex; align-items:center; justify-content:space-between; gap:12px;
-        padding:9px 0; border-top:1px solid rgba(255,255,255,.06); }
-  #panel .toggle:first-of-type { border-top:0; }
-  #panel .switch { position:relative; width:40px; height:22px; flex:0 0 auto; }
-  #panel .switch input { position:absolute; opacity:0; inset:0; margin:0; cursor:pointer; }
-  #panel .switch i { position:absolute; inset:0; border-radius:999px; background:rgba(255,255,255,.14);
-        transition:background .2s; }
+    padding:10px 0; border-top:1px solid rgba(255,255,255,.05); }
+  #panel .toggle span { color:#c9ccd5; font-size:12px; }
+  #panel .switch { position:relative; width:38px; height:22px; flex:0 0 auto; }
+  #panel .switch input { position:absolute; inset:0; opacity:0; margin:0; cursor:pointer; }
+  #panel .switch i { position:absolute; inset:0; border-radius:999px; background:rgba(255,255,255,.13);
+    transition:background .2s var(--ease); }
   #panel .switch i::after { content:""; position:absolute; top:3px; left:3px; width:16px; height:16px;
-        border-radius:50%; background:#e8e8ef; transition:transform .2s; }
-  #panel .switch input:checked + i { background:rgba(110,231,183,.55); }
-  #panel .switch input:checked + i::after { transform:translateX(18px); }
-  #panel .warn { background:rgba(180,83,9,.16); border:1px solid rgba(180,83,9,.5); border-radius:9px;
-        padding:9px 10px; color:#fcd34d; font-size:11.5px; margin:12px 0; }
-  #panel .actions { display:flex; gap:8px; margin-top:16px; }
-  #panel .actions button { flex:1; font:13px/1 inherit; padding:11px; border-radius:9px; cursor:pointer;
-        border:1px solid rgba(255,255,255,.14); background:rgba(255,255,255,.05); color:var(--fg); }
-  #panel .actions button.primary { background:rgba(110,231,183,.16); border-color:rgba(110,231,183,.5);
-        color:var(--accent); font-weight:600; }
+    border-radius:50%; background:#e9eaf0; box-shadow:0 1px 2px rgba(0,0,0,.4);
+    transition:transform .2s var(--ease); }
+  #panel .switch input:checked + i { background:rgba(127,227,187,.5); }
+  #panel .switch input:checked + i::after { transform:translateX(16px); background:#0c1013; }
+  #panel .pfoot { padding:12px 18px calc(14px + env(safe-area-inset-bottom));
+    background:rgba(13,15,19,.96); border-top:1px solid rgba(255,255,255,.07); }
+  #panel .actions { display:flex; gap:8px; }
+  #panel .actions button { flex:1; font:500 13px/1 inherit; padding:12px; border-radius:10px; cursor:pointer;
+    border:1px solid var(--stroke-hi); background:rgba(255,255,255,.05); color:var(--fg);
+    transition:background .16s var(--ease); }
+  #panel .actions button:hover { background:rgba(255,255,255,.09); }
+  #panel .actions button.primary { background:var(--accent-soft); border-color:rgba(127,227,187,.42);
+    color:var(--accent); font-weight:600; }
+  #panel .actions button.primary:hover { background:rgba(127,227,187,.2); }
   #panel .actions button:disabled { opacity:.45; cursor:default; }
-  #panel .state { margin-top:10px; font-size:11.5px; color:var(--dim); min-height:1.3em; }
+  #panel .state { margin:0 0 10px; font-size:11.5px; color:var(--dim); min-height:1.25em; }
   #panel .state.err { color:#fca5a5; }
   #panel .state.ok { color:var(--accent); }
+  #panel .warn { background:rgba(180,83,9,.14); border:1px solid rgba(180,83,9,.45); border-radius:10px;
+    padding:9px 11px; color:#fcd34d; font-size:11.5px; margin:12px 0; }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation-duration:.001ms !important; transition-duration:.001ms !important; }
+  }
+  @media (max-width: 520px) {
+    /* the capsule already runs to the edge; a wordmark on top of it is just mud */
+    #mark { display:none; }
+  }
+  @media (max-width: 420px) {
+    #bar button { width:34px; height:32px; }
+    #chips { font-size:11px; gap:9px; padding:6px 10px; }
+  }
+  @media (pointer: coarse) {
+    #bar button { width:40px; height:38px; }
+    #bar { border-radius:15px; }
+  }
 </style>
 </head>
 <body>
+<svg width="0" height="0" style="display:none" aria-hidden="true">
+  <symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 2 4 14h7l-1 8 10-12h-7l1-8z"/></symbol>
+  <symbol id="i-layers" viewBox="0 0 24 24"><path d="m12 3 9 5-9 5-9-5 9-5z"/><path d="m3 13 9 5 9-5"/></symbol>
+  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-4l-3 8-4-16-3 8H2"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24"><path d="M2.3 12S5.9 5.6 12 5.6 21.7 12 21.7 12 18.1 18.4 12 18.4 2.3 12 2.3 12z"/><circle cx="12" cy="12" r="3"/></symbol>
+  <symbol id="i-eye-off" viewBox="0 0 24 24"><path d="M10.6 6.1A9.6 9.6 0 0 1 12 6c6.1 0 9.7 6 9.7 6a17 17 0 0 1-3.3 4M6.5 6.8A17 17 0 0 0 2.3 12S5.9 18 12 18a9.4 9.4 0 0 0 3.5-.7"/><path d="M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M18 7h2M4 12h3M12 12h8M4 17h9M18 17h2"/><circle cx="15.5" cy="7" r="2"/><circle cx="9.5" cy="12" r="2"/><circle cx="15.5" cy="17" r="2"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M9 4H5.6A1.6 1.6 0 0 0 4 5.6V9M15 4h3.4A1.6 1.6 0 0 1 20 5.6V9M20 15v3.4a1.6 1.6 0 0 1-1.6 1.6H15M4 15v3.4A1.6 1.6 0 0 0 5.6 20H9"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.4 2.9 19.3h18.2L12 3.4z"/><path d="M12 9.2v4.4M12 16.9h.01"/></symbol>
+</svg>
+
 <video id="v" playsinline autoplay muted controls></video>
 <canvas id="gaze"></canvas>
 <div id="gazebadge"></div>
-<div id="stale"></div>
+<div id="stale"><svg class="ico"><use href="#i-alert"/></svg><span id="stale-text"></span></div>
 <div id="msg">connecting…</div>
 <div id="hud"></div>
 <div id="film"></div>
@@ -118,26 +220,34 @@
   <span id="chip-fps"></span>
   <span id="chip-rate"></span>
   <span id="chip-age"></span>
-  <span class="rec off" id="chip-rec"><b>rec</b> <span id="chip-rec-time">0:00</span></span>
+  <span class="rec off" id="chip-rec"><i></i><span id="chip-rec-time">0:00</span></span>
 </div>
-<div id="mark">Stream Frame</div>
-<div id="bar">
-  <button id="mode" title="switch transport">webrtc</button>
-  <button id="stats" title="toggle stats (t)">stats</button>
-  <button id="gazebtn" title="eye tracking reticle (g)">gaze</button>
-  <button id="settings" title="settings (s)">⚙</button>
-  <button id="fs" title="fullscreen (f)">⤢</button>
+<div id="mark"><span class="dot"></span>Stream Frame</div>
+<div id="bar" role="toolbar" aria-label="view controls">
+  <button id="mode" title="transport"><svg class="ico"><use href="#i-bolt"/></svg></button>
+  <button id="stats" title="stats (t)" aria-label="stats"><svg class="ico"><use href="#i-activity"/></svg></button>
+  <button id="gazebtn" title="eye tracking reticle (g)" aria-label="eye tracking"><svg class="ico"><use href="#i-eye"/></svg></button>
+  <button id="settings" title="settings (s)" aria-label="settings"><svg class="ico"><use href="#i-sliders"/></svg></button>
+  <button id="fs" title="fullscreen (f)" aria-label="fullscreen"><svg class="ico"><use href="#i-expand"/></svg></button>
+  <button id="hide" title="hide everything (c)" aria-label="hide overlays"><svg class="ico"><use href="#i-eye-off"/></svg></button>
 </div>
-<div id="panel">
-  <h2>Stream Frame</h2>
-  <p class="hint">Changes reach the headset. Anything the encoder cannot take while running restarts it —
-     the picture blinks for a second.</p>
-  <div id="panel-body"></div>
-  <div class="actions">
-    <button id="panel-close">close</button>
-    <button id="panel-apply" class="primary">apply</button>
+<button id="reveal" title="show overlays (c)" aria-label="show overlays"><svg class="ico"><use href="#i-eye"/></svg></button>
+<div id="panel" role="dialog" aria-label="settings">
+  <div class="phead">
+    <div>
+      <h2>Stream Frame</h2>
+      <p class="hint">Changes reach the headset. Anything the encoder cannot take while running restarts
+         it — the picture blinks for a second.</p>
+    </div>
+    <button id="panel-close" class="x" aria-label="close"><svg class="ico"><use href="#i-x"/></svg></button>
   </div>
-  <div class="state" id="panel-state"></div>
+  <div id="panel-body"></div>
+  <div class="pfoot">
+    <div class="state" id="panel-state"></div>
+    <div class="actions">
+      <button id="panel-apply" class="primary">apply</button>
+    </div>
+  </div>
 </div>
 <script>
 (function () {
@@ -246,7 +356,12 @@
   }
 
   // ---------------------------------------------------------------- mode
-  function syncModeButton() { modeBtn.textContent = mode === "hls" ? "hls" : "webrtc"; }
+  function syncModeButton() {
+    const hls = mode === "hls";
+    modeBtn.innerHTML = '<svg class="ico"><use href="#' + (hls ? "i-layers" : "i-bolt") + '"/></svg>';
+    modeBtn.title = hls ? "HLS — switch to WebRTC (m)" : "WebRTC — switch to HLS (m)";
+    modeBtn.setAttribute("aria-label", modeBtn.title);
+  }
 
   function setMode(next) {
     if (next === mode) return;
@@ -297,8 +412,9 @@
   }, 3000);
 
   const staleEl = document.getElementById("stale");
+  const staleText = document.getElementById("stale-text");
   function showStale(text) {
-    staleEl.textContent = text;
+    if (staleText.textContent !== text) staleText.textContent = text;
     staleEl.classList.toggle("on", !!text);
   }
 
@@ -419,6 +535,24 @@
   if (gazeOn) gazeSet(true);
 
   document.getElementById("stats").onclick = () => { hud.classList.toggle("on"); renderHud(); };
+
+  // ---------------------------------------------------------------- hide the chrome
+  // A headset view is for watching, not for reading. `c` (or the eye button) drops everything the
+  // picture does not need; a small eye stays in the corner to bring it back, which is the only way
+  // in on a phone, where there is no keyboard.
+  const hideBtn = document.getElementById("hide");
+  const revealBtn = document.getElementById("reveal");
+  let chromeHidden = localStorage.getItem("streamframe.hud") === "0";
+
+  function setChromeHidden(hidden) {
+    chromeHidden = hidden;
+    document.body.classList.toggle("clean", hidden);
+    hideBtn.setAttribute("aria-pressed", String(hidden));
+    localStorage.setItem("streamframe.hud", hidden ? "0" : "1");
+  }
+  hideBtn.onclick = () => setChromeHidden(true);
+  revealBtn.onclick = () => setChromeHidden(false);
+  setChromeHidden(chromeHidden);
   document.getElementById("fs").onclick = () => {
     if (document.fullscreenElement) document.exitFullscreen();
     else document.documentElement.requestFullscreen().catch(() => {});
@@ -449,6 +583,8 @@
     const pic = status.picture || {};
     chipAge.textContent = pic.age == null ? "" :
       (pic.age < 1 ? "in sync" : pic.age.toFixed(0) + " s behind");
+    chipAge.classList.toggle("ok", pic.age != null && pic.age < 1);
+    chipAge.classList.toggle("late", pic.age != null && pic.age >= 3);
     const rec = status.record || {};
     const on = !!(rec.enabled && status.encoder);
     chipRec.classList.toggle("off", !on);
@@ -524,24 +660,39 @@
     return m ? Math.round(parseFloat(m[1])) : 4;
   };
 
+  function section(title) {
+    const head = document.createElement("div");
+    head.className = "sec";
+    head.textContent = title;
+    return head;
+  }
+
   function buildForm(data) {
     const s = data.settings, lim = data.limits;
     panelBody.textContent = "";
+
+    panelBody.appendChild(section("Picture"));
     panelBody.appendChild(slider("bitrate", "bitrate", Math.round(lim.bitrate.min / 1048576),
       Math.round(lim.bitrate.max / 1048576), 1, mbits(s.bitrate), (v) => v + " Mbit/s"));
     const fpsList = [30, 40, 60, 72, 90];
     if (!fpsList.includes(s.fps)) fpsList.push(s.fps);
     panelBody.appendChild(choice("fps", "frame rate", fpsList.sort((a, b) => a - b), s.fps));
     panelBody.appendChild(choice("layout", "layout", data.layouts, s.layout));
-    panelBody.appendChild(slider("threads", "x264 threads (0 = auto)", lim.threads.min, lim.threads.max,
+
+    panelBody.appendChild(section("Encoder"));
+    panelBody.appendChild(slider("threads", "x264 threads", lim.threads.min, lim.threads.max,
       1, s.threads, (v) => (Number(v) === 0 ? "auto" : v)));
-    panelBody.appendChild(slider("nice", "priority (nice, higher = kinder to the game)",
+    panelBody.appendChild(slider("nice", "priority — higher is kinder to the game",
       lim.nice.min, lim.nice.max, 1, s.nice, (v) => v));
     panelBody.appendChild(toggle("adapt", "lower bitrate when the encoder cannot keep up", s.adapt));
+
+    panelBody.appendChild(section("Recording"));
     panelBody.appendChild(toggle("record", "record to disk", s.record));
     panelBody.appendChild(slider("record_time", "chunk length", Math.max(30, lim.record_time.min),
       Math.min(900, lim.record_time.max), 30, s.record_time,
       (v) => (Number(v) / 60).toFixed(Number(v) % 60 ? 1 : 0) + " min"));
+
+    panelBody.appendChild(section("Tracking"));
     panelBody.appendChild(toggle("gaze", "eye tracking reticle", s.gaze));
   }
 
@@ -628,7 +779,7 @@
     if (e.key === "t") { hud.classList.toggle("on"); renderHud(); }
     if (e.key === "f") document.getElementById("fs").click();
     if (e.key === "m") modeBtn.click();
-    if (e.key === "c") document.body.classList.toggle("clean");
+    if (e.key === "c") setChromeHidden(!chromeHidden);
     if (e.key === "g") gazeSet(!gazeOn);
     if (e.key === "s") document.getElementById("settings").click();
     if (e.key === "Escape") closePanel();

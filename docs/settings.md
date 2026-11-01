@@ -56,11 +56,14 @@ somewhere else.
 
 ## The player
 
-- A quiet chip row sits bottom-left: transport, resolution and capture rate, bitrate, how far the
-  picture is behind, and a `rec` timer when recording — it fades to a fifth of its opacity after a few
-  idle seconds and comes back on any movement.
-- A vignette and the wordmark keep the picture from looking like a bare `<video>` element. `c` hides
-  all of it.
+- One capsule sits bottom-left: transport, resolution and capture rate, bitrate, how far the picture is
+  behind (green when in sync, amber once it is seconds off), and a `rec` timer. It fades to a quarter of
+  its opacity after a few idle seconds and comes back on any movement.
+- A vignette and the wordmark keep the picture from looking like a bare `<video>` element.
+- **Hiding everything** is a state, not a keystroke: the eye button (or `c`) drops the bar, capsule,
+  wordmark and vignette and leaves only the picture; a small eye in the corner brings them back. The
+  choice survives a reload, and it is the only way to get the overlays back on a phone, where there is
+  no keyboard.
 - The gear (or `s`) opens the panel; `Esc` closes it. While a change is applied the panel says so and
   the encoder's restart is announced before you press apply, not after.
 
