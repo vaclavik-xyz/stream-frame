@@ -65,13 +65,17 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
   encoder is restarted and watched for eight seconds, and a setting that does not survive is rolled back
   before it can be remembered. The file is written only after a value has actually run. See
   [docs/settings.md](docs/settings.md).
+- **Its own Wi-Fi, if you want none of the network you are on.** SteamOS already runs a hotspot beside
+  its station link; the player reads it and hands a phone two codes — one to join, one to open the
+  stream — so the picture goes headset → phone with no router in between. See
+  [docs/hotspot.md](docs/hotspot.md).
 - **It looks like a device.** A quiet chip row (transport, rate, how far behind the picture is, a `rec`
   timer), a vignette and a wordmark — fading out when you are watching, back when you move.
 - **Leaves the CPU to the game.** ffmpeg runs at `nice 10` (`--nice`), can be capped with `--threads`, and
   if the compositor is producing full-rate frames while the encoder cannot keep up, the daemon lowers the
   bitrate once or twice instead of stuttering forever (`--adapt`, ring mode only).
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
-- **Tests without hardware.** 96 unit tests for the ring parser, eye-record parser, command builder,
+- **Tests without hardware.** 110 unit tests for the ring parser, eye-record parser, command builder,
   segment numbering, HTTP routes, Range requests, event streaming, settings validation and rollback, and
   shutdown behaviour — `pytest` runs with no GPU, no headset and no ffmpeg.
 
@@ -129,6 +133,8 @@ locally: poking the panel in dev cannot restart the stream someone is watching.
 | `/gaze.csv` | download the gaze recording so far (needs `--gaze-csv`) |
 | `/recordings` | JSON list of the MP4 chunks with sizes and URLs (needs `--record`) |
 | `/api/settings` | `GET` current values + ranges, `POST` a change (token) |
+| `/api/hotspot` | the headset's own hotspot: SSID, passphrase, live address, URL, band, clients (token) |
+| `/qr.js` | the QR encoder the page draws the joining codes with (public, vendored) |
 | `/recordings/<name>` | download or stream one chunk, `Range` supported; the newest one is `"open": true` until the encoder closes it |
 | `/log?e=…` | player telemetry, appended to `/tmp/streamframe-client.log` |
 
@@ -182,6 +188,9 @@ what this project deliberately is not: [docs/prior-art.md](docs/prior-art.md).
 - **Gaze is approximate and new.** The reticle places `yaw`/`pitch` inside the picture using a FOV you
   declare (`--gaze-fov`); it is not a calibrated projection, and the parser has only been exercised
   against a synthetic record so far — see [docs/gaze.md](docs/gaze.md#honest-status).
+- **The hotspot is SteamOS's, not ours.** We read `/var/run/softap_hostapd.conf` and the live interface;
+  we never start or reconfigure the AP. On this hardware it transmits on 6 GHz only, so Wi-Fi 5 devices
+  (older phones, a Steam Deck LCD) cannot see it at all — see [docs/hotspot.md](docs/hotspot.md).
 - **HLS is the stable path, WebRTC is the fast one.** They fail independently, on purpose.
 - **Recording is chunked and blunt.** No transcoding, no trimming, no thumbnails: one `-c copy` MP4 per
   `--record-time` seconds, and a hard kill loses the chunk that was open. It also costs I/O on the same

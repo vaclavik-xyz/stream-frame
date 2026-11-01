@@ -42,7 +42,7 @@ test:
 
 lint:
 	$(PY) -m ruff check server tests || true
-	$(PY) -m py_compile server/streamframe.py server/settings.py server/gaze.py
+	$(PY) -m py_compile server/streamframe.py server/settings.py server/gaze.py server/hotspot.py
 
 # ---------------------------------------------------------------- install
 install: install-layer install-units
@@ -59,8 +59,10 @@ install-units:
 	install -m 755 server/streamframe.py $(PREFIX)/server/streamframe.py
 	install -m 644 server/settings.py $(PREFIX)/server/settings.py
 	install -m 644 server/gaze.py $(PREFIX)/server/gaze.py
+	install -m 644 server/hotspot.py $(PREFIX)/server/hotspot.py
 	install -m 644 server/vrstreamd.py $(PREFIX)/server/vrstreamd.py   # alias for existing units
 	install -m 644 server/web/index.html $(PREFIX)/server/web/index.html
+	install -m 644 server/web/qr.js $(PREFIX)/server/web/qr.js
 	install -m 644 config/mediamtx.yml $(PREFIX)/config/mediamtx.yml
 	install -m 644 systemd/streamframe.service $(PREFIX)/systemd/
 	install -m 644 systemd/mediamtx.service $(PREFIX)/systemd/

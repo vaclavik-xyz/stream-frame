@@ -167,6 +167,26 @@
     border:1px solid var(--stroke-hi); background:rgba(255,255,255,.05); color:var(--fg);
     transition:background .16s var(--ease); }
   #panel .actions button:hover { background:rgba(255,255,255,.09); }
+  #panel .share p { margin:0 0 9px; color:var(--dim); font-size:11.5px; line-height:1.45; }
+  #panel .share button { width:100%; font:500 12.5px/1 inherit; padding:11px; border-radius:10px;
+    border:1px solid var(--stroke-hi); background:rgba(255,255,255,.05); color:var(--fg); cursor:pointer;
+    transition:background .15s var(--ease); }
+  #panel .share button:hover { background:rgba(255,255,255,.09); }
+  #panel .share .ap { color:var(--accent); }
+  /* a QR has to sit on white, or a phone camera refuses it */
+  #qrbox { position:fixed; inset:0; z-index:20; display:none; place-items:center; padding:18px;
+    background:rgba(4,5,7,.82); }
+  #qrbox.on { display:grid; }
+  #qrbox .card { width:min(330px,92vw); max-height:92vh; overflow-y:auto; background:#f4f5f7; color:#0b0d10;
+    border-radius:20px; padding:16px 16px 10px; box-shadow:0 30px 80px rgba(0,0,0,.6); }
+  #qrbox h3 { margin:0 0 2px; font-size:15px; font-weight:650; letter-spacing:-.01em; }
+  #qrbox .step { margin:9px 0 6px; font-size:11.5px; color:#4a4f59; }
+  #qrbox .step b { color:#0b0d10; font-weight:600; }
+  #qrbox img { display:block; width:auto; max-width:100%; max-height:32vh; margin:0 auto;
+    border-radius:9px; background:#fff; image-rendering:pixelated; }
+  #qrbox .meta { white-space:pre-line; margin:9px 0 14px; font:11px/1.5 ui-monospace,Menlo,monospace; color:#4a4f59; word-break:break-all; }
+  #qrbox .done { position:sticky; bottom:0; width:100%; font:600 12.5px/1 inherit; padding:11px;
+    border-radius:10px; border:0; background:#0b0d10; color:#f4f5f7; cursor:pointer; }
   #panel .actions button.primary { background:var(--accent-soft); border-color:rgba(127,227,187,.42);
     color:var(--accent); font-weight:600; }
   #panel .actions button.primary:hover { background:rgba(127,227,187,.2); }
@@ -249,6 +269,18 @@
     </div>
   </div>
 </div>
+<div id="qrbox" aria-hidden="true">
+  <div class="card" role="dialog" aria-label="join from a phone">
+    <h3>Join from a phone</h3>
+    <p class="step" id="step-wifi">1 · scan to join <b id="qr-ssid"></b></p>
+    <img id="qr-wifi" alt="Wi-Fi joining code" hidden>
+    <p class="step" id="step-url">2 · scan again to open the stream</p>
+    <img id="qr-url" alt="stream address code" hidden>
+    <p class="meta" id="qr-meta"></p>
+    <button id="qr-close" class="done">done</button>
+  </div>
+</div>
+<script src="qr.js"></script>
 <script>
 (function () {
   "use strict";
@@ -667,6 +699,103 @@
     return head;
   }
 
+  // ---- the phone card --------------------------------------------------------
+  // The headset's own hotspot is started by SteamOS, not by us, so this whole block is read-only: it
+  // asks the daemon what the AP is called and draws two codes a camera can read.
+  let shareInfo = null;
+
+  function drawQr(img, text) {
+    if (!window.qrcode || !text) return false;
+    const qr = qrcode(0, "M");
+    qr.addData(text);
+    qr.make();
+    const n = qr.getModuleCount(), quiet = 4;
+    const px = Math.max(2, Math.floor(300 / (n + quiet * 2)));
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = (n + quiet * 2) * px;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#0b0d10";
+    for (let r = 0; r < n; r += 1) {
+      for (let c = 0; c < n; c += 1) {
+        if (qr.isDark(r, c)) ctx.fillRect((c + quiet) * px, (r + quiet) * px, px, px);
+      }
+    }
+    // hand the pixels to an <img>: a canvas inside the blurred card does not composite in Chrome
+    img.src = canvas.toDataURL("image/png");
+    return true;
+  }
+
+  function shareSection(info) {
+    const wrap = document.createElement("div");
+    wrap.className = "share";
+    const p = document.createElement("p");
+    if (!info) {
+      p.textContent = "The headset can hand out its own Wi-Fi, so a phone or a deck streams straight " +
+        "from it without a router in between.";
+    } else if (info.available) {
+      p.innerHTML = '<span class="ap">hotspot on</span> · ' + info.ssid + " · " + info.band +
+        (info.clients === 0 ? " · nobody connected yet" : " · " + info.clients + " connected");
+    } else {
+      p.textContent = "No hotspot is running on this machine — SteamOS starts one when the radio is free. " +
+        "The stream still works over your normal network.";
+    }
+    wrap.appendChild(p);
+    if (info && info.available) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.id = "share-btn";
+      b.textContent = "show the joining code";
+      b.addEventListener("click", openShare);
+      wrap.appendChild(b);
+    }
+    return wrap;
+  }
+
+  async function openShare() {
+    const box = document.getElementById("qrbox");
+    const meta = document.getElementById("qr-meta");
+    box.classList.add("on");
+    box.setAttribute("aria-hidden", "false");
+    meta.textContent = "reading the hotspot…";
+    let info = shareInfo;
+    if (!info) {
+      try {
+        const res = await fetch(qs("api/hotspot"));
+        if (!res.ok) throw new Error("http " + res.status);
+        info = await res.json();
+      } catch (err) {
+        info = null;
+      }
+    }
+    const wifi = document.getElementById("qr-wifi");
+    const url = document.getElementById("qr-url");
+    const stepWifi = document.getElementById("step-wifi");
+    const stepUrl = document.getElementById("step-url");
+    document.getElementById("qr-ssid").textContent = info && info.ssid ? info.ssid : "";
+    if (!info || !info.available) {
+      stepWifi.hidden = stepUrl.hidden = wifi.hidden = url.hidden = true;
+      meta.textContent = "no hotspot to join";
+      return;
+    }
+    stepWifi.hidden = !drawQr(wifi, info.wifi_payload);
+    stepUrl.hidden = !drawQr(url, info.url);
+    wifi.hidden = stepWifi.hidden;
+    url.hidden = stepUrl.hidden;
+    const bits = [info.url];
+    if (info.mdns) bits.push(info.mdns);
+    bits.push("password " + info.password);
+    bits.push((info.hidden ? "hidden network" : info.ssid) + " · no internet");
+    meta.textContent = bits.join("\n");
+  }
+
+  function closeShare() {
+    const box = document.getElementById("qrbox");
+    box.classList.remove("on");
+    box.setAttribute("aria-hidden", "true");
+  }
+
   function buildForm(data) {
     const s = data.settings, lim = data.limits;
     panelBody.textContent = "";
@@ -694,6 +823,25 @@
 
     panelBody.appendChild(section("Tracking"));
     panelBody.appendChild(toggle("gaze", "eye tracking reticle", s.gaze));
+
+    panelBody.appendChild(section("Phone"));
+    const shareHost = document.createElement("div");
+    shareHost.id = "share-host";
+    shareHost.appendChild(shareSection(shareInfo));
+    panelBody.appendChild(shareHost);
+    if (shareInfo === null) {
+      // read once per page load; the block updates in place so a form being edited is left alone
+      fetch(qs("api/hotspot")).then((r) => (r.ok ? r.json() : null))
+        .then((info) => {
+          shareInfo = info || {};
+          const host = document.getElementById("share-host");
+          if (host) {
+            host.textContent = "";
+            host.appendChild(shareSection(shareInfo));
+          }
+        })
+        .catch(() => { shareInfo = {}; });
+    }
   }
 
   function readForm() {
@@ -712,6 +860,7 @@
 
   async function openPanel() {
     panel.classList.add("on");
+    shareInfo = null;          // the hotspot can come and go; ask again each time the panel opens
     panelState.className = "state";
     panelState.textContent = "loading…";
     try {
@@ -782,7 +931,16 @@
     if (e.key === "c") setChromeHidden(!chromeHidden);
     if (e.key === "g") gazeSet(!gazeOn);
     if (e.key === "s") document.getElementById("settings").click();
-    if (e.key === "Escape") closePanel();
+    if (e.key === "Escape") {
+      // the card sits on top of the panel: escape peels one layer at a time
+      if (document.getElementById("qrbox").classList.contains("on")) closeShare();
+      else closePanel();
+    }
+  });
+
+  document.getElementById("qr-close").addEventListener("click", closeShare);
+  document.getElementById("qrbox").addEventListener("click", (e) => {
+    if (e.target.id === "qrbox") closeShare();     // backdrop, not the card
   });
 })();
 </script>

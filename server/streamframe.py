@@ -41,6 +41,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlparse
 
+import hotspot
 import settings as prefs
 from gaze import EyeSource, GazeRecorder
 
@@ -967,6 +968,22 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not head:
             self._send(body)
 
+    def _asset(self, path: str, ctype: str, head: bool = False, max_age: int = 3600) -> None:
+        """A file from server/web/ that the page loads by itself (the QR encoder)."""
+        try:
+            with open(path, "rb") as fh:
+                body = fh.read()
+        except OSError:
+            self._json({"error": "not found"}, 404, head=head)
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", ctype)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", f"public, max-age={max_age}")
+        self.end_headers()
+        if not head:
+            self._send(body)
+
     def _beacon(self, query: dict) -> None:
         text = (query.get("e") or [""])[0][:200]
         text = text.replace("\r", " ").replace("\n", " ")      # no log-line forging
@@ -1137,6 +1154,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 return
             self._beacon(query)
             return
+        if path == "/qr.js":                      # a <script src> carries no token, and the file is public
+            self._asset(os.path.join(HERE, "web", "qr.js"), "application/javascript", head)
+            return
         if path == "/wake":                       # MediaMTX runOnDemand target, no token needed
             self.enc.ensure()
             LAST_REQUEST = time.time()
@@ -1151,6 +1171,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
 
         if path == "/api/settings":
             self._json(self.runtime.describe(), head=head)
+            return
+        if path == "/api/hotspot":
+            self._json(hotspot.summary(self.cfg.port), head=head)
             return
         if path == "/status":
             # in ring mode capture fps is sampled from the ring; a device is measured by ffmpeg

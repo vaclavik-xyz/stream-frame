@@ -828,6 +828,41 @@ def test_settings_need_the_token_when_one_is_set(server):
     assert get(base + "/api/settings?token=s3cret")[0] == 200
 
 
+def test_hotspot_route_says_so_when_nothing_is_running(server, monkeypatch):
+    base, _, _ = server
+    monkeypatch.setattr(vs.hotspot, "summary", lambda port, **kw: {"available": False, "url": ""})
+    code, body, _ = get(base + "/api/hotspot")
+    assert code == 200 and json.loads(body)["available"] is False
+
+
+def test_hotspot_route_publishes_what_a_phone_needs(server, monkeypatch):
+    base, cfg, _ = server
+    monkeypatch.setattr(vs.hotspot, "summary", lambda port, **kw: {
+        "available": True, "ssid": "frame_test", "password": "pw", "clients": 0,
+        "url": f"http://10.35.78.1:{port}/", "wifi_payload": "WIFI:T:WPA;S:frame_test;P:pw;;",
+    })
+    payload = json.loads(get(base + "/api/hotspot")[1])
+    assert payload["ssid"] == "frame_test"
+    assert payload["url"] == f"http://10.35.78.1:{cfg.port}/"
+
+
+def test_hotspot_needs_the_token_when_one_is_set(server, monkeypatch):
+    base, cfg, _ = server
+    monkeypatch.setattr(vs.hotspot, "summary", lambda port, **kw: {"available": False, "url": ""})
+    cfg.token = "s3cret"
+    assert get(base + "/api/hotspot")[0] == 401      # the passphrase does not leak to whoever asks
+    assert get(base + "/api/hotspot?token=s3cret")[0] == 200
+
+
+def test_qr_encoder_is_served_without_a_token(server):
+    base, cfg, _ = server
+    cfg.token = "s3cret"                             # a <script src> cannot carry one
+    code, body, headers = get(base + "/qr.js")
+    assert code == 200 and b"qrcode" in body.lower()
+    assert headers["Content-Type"].startswith("application/javascript")
+    assert get(base + "/qr.js", method="HEAD")[1] == b""
+
+
 def test_settings_reject_a_value_that_would_break_the_picture(server):
     base, cfg, _ = server
     code, body = post(base + "/api/settings", {"bitrate": "150k"})

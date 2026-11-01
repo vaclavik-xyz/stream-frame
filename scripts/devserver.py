@@ -24,7 +24,8 @@ import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-PAGE = os.path.join(HERE, "..", "server", "web", "index.html")
+WEB = os.path.join(HERE, "..", "server", "web")
+PAGE = os.path.join(WEB, "index.html")
 
 # settings the daemon cannot change without restarting ffmpeg — mirrors server/settings.py
 RESTART_FIELDS = {"bitrate", "fps", "layout", "threads", "nice", "adapt", "record", "record_time"}
@@ -114,6 +115,10 @@ class Dev(BaseHTTPRequestHandler):
             return self._send(200, html, "text/html; charset=utf-8")
         if path == "/api/settings" and self.fake:
             return self._json(200, self.fake)
+        if path == "/qr.js":
+            # the page loads it by itself; serve the checkout's copy, not the headset's
+            with open(os.path.join(WEB, "qr.js"), "rb") as fh:
+                return self._send(200, fh.read(), "application/javascript")
         if path == "/favicon.ico":
             return self._send(204, b"", "image/x-icon")
         return self._proxy()
