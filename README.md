@@ -60,7 +60,7 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
   if the compositor is producing full-rate frames while the encoder cannot keep up, the daemon lowers the
   bitrate once or twice instead of stuttering forever (`--adapt`, ring mode only).
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
-- **Tests without hardware.** 68 unit tests for the ring parser, eye-record parser, command builder,
+- **Tests without hardware.** 70 unit tests for the ring parser, eye-record parser, command builder,
   segment numbering, HTTP routes, Range requests, event streaming and shutdown behaviour — `pytest` runs
   with no GPU, no headset and no ffmpeg.
 
@@ -110,7 +110,7 @@ Details, manual install, environment variables: [docs/install.md](docs/install.m
 | `/gaze.sse` | the same as server-sent events, one event per new estimate — `curl -N …/gaze.sse` |
 | `/gaze.csv` | download the gaze recording so far (needs `--gaze-csv`) |
 | `/recordings` | JSON list of the MP4 chunks with sizes and URLs (needs `--record`) |
-| `/recordings/<name>` | download or stream one chunk, `Range` supported |
+| `/recordings/<name>` | download or stream one chunk, `Range` supported; the newest one is `"open": true` until the encoder closes it |
 | `/log?e=…` | player telemetry, appended to `/tmp/vrstreamd-client.log` |
 
 ```bash
