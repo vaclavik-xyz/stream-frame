@@ -114,6 +114,9 @@
   #toast.link { pointer-events:auto; }
   #toast-link { color:var(--accent); margin-left:6px; text-decoration:underline; font-weight:600; }
   #bar button.off { opacity:.3; pointer-events:none; }
+  /* the pad walks this selection: a ring big enough to see from a sofa */
+  #bar button.padsel { outline:2px solid var(--accent); outline-offset:2px;
+    background:var(--accent-soft); color:#fff; }
   #bar button.busy { opacity:.5; }
   #bar button.muted { opacity:.45; }
 
@@ -1007,6 +1010,96 @@
     }
   }
 
+  // --- controllers ------------------------------------------------------
+  // Steam's overlay browser hands the page both the real pad and a virtual one that Steam
+  // Input mirrors it into, so one press arrives twice and a held button keeps repeating.
+  // Every action is therefore latched by name and stays quiet until the pad is released.
+  //
+  // The d-pad walks a selection across the toolbar — those buttons are otherwise reachable
+  // only with a mouse. Left/right moves, A presses, up/down is volume, B steps back.
+  const padSeen = new Set();
+  const latched = {};
+  const padName = {0: "A", 1: "B", 2: "X", 3: "Y", 12: "up", 13: "down", 14: "left", 15: "right"};
+  let padSel = -1;
+
+  const barButtons = () => Array.from(document.querySelectorAll("#bar button"));
+  function padPaint() {
+    barButtons().forEach((b, i) => b.classList.toggle("padsel", i === padSel));
+  }
+  function padMove(step) {
+    const list = barButtons();
+    if (!list.length) return;
+    setChromeHidden(false);            // a selection you cannot see is not a selection
+    padSel = padSel < 0 ? (step > 0 ? 0 : list.length - 1)
+                        : (padSel + step + list.length) % list.length;
+    padPaint();
+    const b = list[padSel];
+    toast("\u25b8 " + (b.getAttribute("aria-label") || b.title || "button"));
+  }
+  function nudgeVolume(delta) {
+    const next = Math.min(1, Math.max(0, Math.round((v.volume + delta) * 20) / 20));
+    v.volume = next;
+    if (next > 0 && v.muted) { wantSound = true; unmute(); }
+    toast("volume " + Math.round(next * 100) + " %");
+  }
+  function padAct(name) {
+    const list = barButtons();
+    if (name === "left") return padMove(-1);
+    if (name === "right") return padMove(1);
+    if (name === "up") return nudgeVolume(+0.05);
+    if (name === "down") return nudgeVolume(-0.05);
+    if (name === "A") {
+      const target = list[padSel];
+      if (target) { target.click(); setChromeHidden(false); }
+      else soundBtn.click();           // nothing selected yet: A is still "sound"
+      return;
+    }
+    if (name === "B") {
+      if (panel.classList.contains("on")) return closePanel();
+      if (document.getElementById("qrbox").classList.contains("on")) return closeShare();
+      padSel = -1; padPaint(); return;
+    }
+    if (name === "X") return clipNow();
+    if (name === "Y") return document.getElementById("settings").click();
+  }
+  function padPoll() {
+    const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+    for (const gp of pads) {
+      if (!gp || !gp.connected) continue;
+      if (!padSeen.has(gp.id)) {
+        // one beacon per pad: this is how we find out whether a pad reaches the page at all
+        padSeen.add(gp.id);
+        fetch(qs("log?e=" + encodeURIComponent("pad: " + gp.id + " buttons=" + gp.buttons.length))).catch(() => {});
+      }
+      gp.buttons.forEach((btn, i) => {
+        const name = padName[i];
+        if (!name) return;
+        const held = btn.pressed || btn.value > 0.5;
+        if (held && !latched[name]) {
+          latched[name] = true;
+          padAct(name);
+          fetch(qs("log?e=pad-action:" + name)).catch(() => {});
+        } else if (!held) {
+          latched[name] = false;
+        }
+      });
+    }
+  }
+  // Neither requestAnimationFrame nor setInterval survives a tab that the browser decides is
+  // background — rAF stops outright and timers drop to once a second, which is how a quick tap
+  // lands between two polls and simply vanishes. A message-channel pump keeps its own pace
+  // whatever the visibility state is; the timestamp guard keeps it from spinning hot.
+  if (navigator.getGamepads) {
+    let padNext = 0;
+    const pump = new MessageChannel();
+    pump.port1.onmessage = () => {
+      const now = performance.now();
+      if (now >= padNext) { padNext = now + 8; padPoll(); }
+      pump.port2.postMessage(0);
+    };
+    pump.port2.postMessage(0);
+  }
+
   document.getElementById("settings").onclick = () =>
     (panel.classList.contains("on") ? closePanel() : openPanel());
   panelClose.onclick = closePanel;
@@ -1025,6 +1118,14 @@
     if (e.key === "g") gazeSet(!gazeOn);
     if (e.key === "s") document.getElementById("settings").click();
     if (e.key === "k") clipNow();
+    if (e.key === "ArrowLeft") { e.preventDefault(); padMove(-1); }
+    if (e.key === "ArrowRight") { e.preventDefault(); padMove(1); }
+    if (e.key === "ArrowUp") { e.preventDefault(); nudgeVolume(+0.05); }
+    if (e.key === "ArrowDown") { e.preventDefault(); nudgeVolume(-0.05); }
+    if (e.key === "Enter" && padSel >= 0) {
+      const target = document.querySelectorAll("#bar button")[padSel];
+      if (target) { e.preventDefault(); target.click(); setChromeHidden(false); }
+    }
     if (e.key === "Escape") {
       // the card sits on top of the panel: escape peels one layer at a time
       if (document.getElementById("qrbox").classList.contains("on")) closeShare();
