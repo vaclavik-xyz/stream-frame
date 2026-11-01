@@ -32,6 +32,12 @@ curl -O -J http://<host>:8101/recordings/rec-20261101-204512-000.mp4
 `/recordings/<name>` serves the file with `Range` support, so a phone can stream it without downloading
 everything first. Names are checked: only `rec-*.mp4` inside the recording folder is reachable.
 
+The newest chunk is marked `"open": true` while the encoder is running: its index is written only when it
+closes, so a download of that file will not play yet. Everything before it is finished and playable.
+
+Stopping the daemon closes the open chunk properly (`systemctl --user stop vrstream` sends EOF to ffmpeg
+and waits for it to write the index) — a hard kill or power cut is the only case where one chunk is lost.
+
 ## Disk budget
 
 `--record-limit` (default `20G`) is a ceiling, not a reservation: every 30 s the daemon deletes the oldest
@@ -53,3 +59,5 @@ looking at second 12". Both files live on the headset's clock; nothing else has 
   the page or `curl /wake` first, since nothing is encoded while nobody watches.
 - The `segment` branch is `onfail=ignore` inside the tee: if the folder is not writable, the live stream
   keeps working and only the recording is missing. The reason is in `/tmp/vrstreamd-ffmpeg.log`.
+- A chunk that is the newest in the folder while the encoder runs is still open (`"open": true`) and will
+  not play; wait for it to close or stop the daemon.

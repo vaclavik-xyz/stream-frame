@@ -745,3 +745,46 @@ def test_bitrate_downgrade_stays_close_to_the_original():
         original = vs.mem_suffix(value)
         shrunk = vs.mem_suffix(vs.fmt_size(int(original * 0.7)))
         assert 0.65 * original <= shrunk <= 0.75 * original
+
+
+def test_shutdown_closes_stdin_and_waits_before_terminating():
+    """A SIGTERM straight away left the last MP4 chunk without its index."""
+    class FakeProc:
+        def __init__(self):
+            self.stdin = open(os.devnull, "rb")
+            self.stdin_closed = False
+            self.terminated = False
+            self.waited = []
+
+        def poll(self):
+            return None
+
+        def wait(self, timeout=None):
+            self.waited.append(timeout)
+            return 0
+
+        def terminate(self):
+            self.terminated = True
+
+    enc = vs.Encoder(vs.Config(rtsp_url=""), vs.FrameRing("/nonexistent"))
+    proc = FakeProc()
+    enc._proc = proc
+    closed = []
+    proc.stdin = type("S", (), {"close": lambda self: closed.append(True)})()
+    enc.shutdown()
+    assert closed == [True]              # EOF is the clean stop
+    assert proc.waited                  # and we wait for ffmpeg to write its index
+    assert proc.terminated is False
+
+
+def test_recordings_marks_the_chunk_that_is_still_written(server, tmp_path):
+    base, cfg, enc = server
+    cfg.record = str(tmp_path)
+    (tmp_path / "rec-1-000.mp4").write_bytes(b"x" * 10)
+    (tmp_path / "rec-1-001.mp4").write_bytes(b"y" * 10)
+    enc.alive = lambda: True
+    files = json.loads(get(base + "/recordings")[1])["files"]
+    assert [f["open"] for f in files] == [False, True]
+    enc.alive = lambda: False
+    files = json.loads(get(base + "/recordings")[1])["files"]
+    assert [f["open"] for f in files] == [False, False]

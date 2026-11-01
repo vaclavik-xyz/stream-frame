@@ -425,14 +425,30 @@ class Encoder:
             proc.terminate()                  # feeder sees the broken pipe and exits
 
     def shutdown(self) -> None:
+        """Stop ffmpeg *cleanly*: an MP4 chunk only becomes playable when its index is written.
+
+        Closing stdin is the polite stop (the feeder does the same when the idle timer expires): ffmpeg
+        sees EOF, flushes every muxer, writes the moov atom and exits 0. A SIGTERM straight away used to
+        leave the last chunk unreadable, and killing it after three seconds took the index with it.
+        """
         with self._lock:
             self._shutdown.set()
             self._want.set()
             proc = self._proc
         if proc and proc.poll() is None:
+            try:
+                if proc.stdin:
+                    proc.stdin.close()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=8)
+                return
+            except subprocess.TimeoutExpired:
+                pass
             proc.terminate()
             try:
-                proc.wait(timeout=3)
+                proc.wait(timeout=4)
             except subprocess.TimeoutExpired:
                 proc.kill()
 
@@ -989,6 +1005,12 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if path == "/recordings":
             files = record_files(self.cfg.record_dir() or "")
+            # the newest chunk is still open while the encoder lives: it has no index yet and will not
+            # play, so say so instead of handing out a file that looks broken
+            for f in files:
+                f["open"] = False
+            if files and self.enc.alive():
+                files[-1]["open"] = True
             self._json({"enabled": bool(self.cfg.record_dir()), "dir": self.cfg.record_dir() or "",
                         "limit": self.cfg.record_limit_bytes(),
                         "bytes": sum(f["bytes"] for f in files),
