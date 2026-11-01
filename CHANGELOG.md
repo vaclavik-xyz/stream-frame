@@ -12,6 +12,10 @@ All notable changes to this project are documented here. The format follows
   no error. The bare name is now read as the bare name.
 
 ### Added
+- `deck-stream.sh start` now follows the session it is in: in Game Mode it opens the player page in
+  Steam's own overlay browser (`steam://openurl/…`, HLS, no session switch), on the desktop it plays
+  RTSP in mpv. `--browser` / `--mpv` force either route, and `status` reports which one is live by
+  looking for the Deck's connection to port 8101.
 - Brand mark, app icon, favicon and a 1200×630 social preview (`docs/img/brand/`). The mark is one
   continuous ribbon around the visor rim — vector, so it holds from 16 px to print.
 - `/favicon.ico`, `/icon.svg` and `/apple-touch-icon.png` are served without a token, like `qr.js`:

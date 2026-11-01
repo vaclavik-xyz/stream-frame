@@ -211,19 +211,30 @@ what this project deliberately is not: [docs/prior-art.md](docs/prior-art.md).
 
 ## Watching on the TV
 
-On a Steam Deck, `scripts/deck-stream.sh` does the whole dance: it switches the session to the desktop,
-waits for it, plays RTSP fullscreen and can put the Deck back into Game Mode afterwards.
+On a Steam Deck, `scripts/deck-stream.sh` picks the route that fits the session you are already in:
 
 ```bash
-deck-stream.sh start    # desktop session + fullscreen mpv
-deck-stream.sh status   # session, player, readers
-deck-stream.sh stop     # back to Game Mode
+deck-stream.sh start    # Game Mode: Steam browser + HLS. Desktop: fullscreen mpv + RTSP
+deck-stream.sh status   # session, route, readers
+deck-stream.sh stop     # stop mpv; in Game Mode close the browser with B
 ```
 
-The Steam non-Steam shortcut (`scripts/make-shortcut.py`) is written and shows up in the library, but this
-Deck's Steam refuses to start it from Game Mode with "game configuration is not available". Until that is
-understood, the script is the route that works — and it survives an SSH disconnect, because the player
+| | browser (HLS) | mpv (RTSP) |
+| --- | --- | --- |
+| stays in Game Mode | yes | no, switches to the desktop |
+| latency | ~4-6 s (2 s segments, 8-segment window) | under 1 s |
+| CPU on the Deck | ~75 % of one core (CEF) | ~25 %, hardware decoded |
+| picture | identical — one ffmpeg encodes once and tees the same H.264 to both | |
+| sound | AAC 128k, starts muted, tap to unmute | Opus 96k |
+
+`--browser` and `--mpv` force a route. The mpv route survives an SSH disconnect, because the player
 runs in its own systemd unit.
+
+In Game Mode the viewer is Steam's own overlay browser, opened with `steam://openurl/http://<frame>:8101/`.
+That is not a workaround we chose so much as the only door gamescope opens: it shows what Steam
+launched, and this Deck's Steam refuses to launch the non-Steam shortcut (`scripts/make-shortcut.py`)
+with "game configuration is not available". The browser route also cannot be closed from outside —
+it belongs to Steam, and killing `steamwebhelper` would take the UI with it.
 
 ## Tested on
 
