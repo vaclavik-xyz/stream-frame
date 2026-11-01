@@ -12,9 +12,9 @@ only a direction and two lid values, the same numbers the compositor already com
 `--gaze auto` is the default and does the obvious thing:
 
 ```bash
-python3 server/vrstreamd.py --gaze auto        # use /dev/shm/eye-server.mmap when it exists
-python3 server/vrstreamd.py --gaze off         # never touch the eye server
-python3 server/vrstreamd.py --gaze /run/user/1000/other.mmap
+python3 server/streamframe.py --gaze auto        # use /dev/shm/eye-server.mmap when it exists
+python3 server/streamframe.py --gaze off         # never touch the eye server
+python3 server/streamframe.py --gaze /run/user/1000/other.mmap
 ```
 
 In the player press **g** (or the `gaze` button) for the reticle; the choice is remembered in
@@ -46,9 +46,9 @@ is a working client.
 ## Recording it next to the video
 
 ```bash
-python3 server/vrstreamd.py --gaze-csv auto        # <hls-dir>/gaze.csv
-python3 server/vrstreamd.py --gaze-csv ~/run1/     # a directory: gaze.csv inside it
-python3 server/vrstreamd.py --gaze-csv ~/run1/eyes.csv
+python3 server/streamframe.py --gaze-csv auto        # <hls-dir>/gaze.csv
+python3 server/streamframe.py --gaze-csv ~/run1/     # a directory: gaze.csv inside it
+python3 server/streamframe.py --gaze-csv ~/run1/eyes.csv
 ```
 
 One row per new estimate, append-only:

@@ -31,14 +31,14 @@ $(LAYER_SRC): ;
 
 # ---------------------------------------------------------------- dev
 run:
-	$(PY) server/vrstreamd.py -v
+	$(PY) server/streamframe.py -v
 
 test:
 	$(PY) -m pytest -q tests
 
 lint:
 	$(PY) -m ruff check server tests || true
-	$(PY) -m py_compile server/vrstreamd.py
+	$(PY) -m py_compile server/streamframe.py server/settings.py server/gaze.py
 
 # ---------------------------------------------------------------- install
 install: install-layer install-units
@@ -52,7 +52,10 @@ install-layer: layer
 
 install-units:
 	install -d $(PREFIX)/bin $(PREFIX)/config $(PREFIX)/server/web $(PREFIX)/systemd
-	install -m 755 server/vrstreamd.py $(PREFIX)/server/vrstreamd.py
+	install -m 755 server/streamframe.py $(PREFIX)/server/streamframe.py
+	install -m 644 server/settings.py $(PREFIX)/server/settings.py
+	install -m 644 server/gaze.py $(PREFIX)/server/gaze.py
+	install -m 644 server/vrstreamd.py $(PREFIX)/server/vrstreamd.py   # alias for existing units
 	install -m 644 server/web/index.html $(PREFIX)/server/web/index.html
 	install -m 644 config/mediamtx.yml $(PREFIX)/config/mediamtx.yml
 	install -m 644 systemd/vrstream.service $(PREFIX)/systemd/

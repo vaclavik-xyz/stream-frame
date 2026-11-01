@@ -4,9 +4,9 @@ The same encode that feeds the live stream can also write MP4 files. It is one m
 existing `tee`, so recording costs no extra CPU — only disk.
 
 ```bash
-python3 server/vrstreamd.py --record auto                 # ~/vrstream-recordings
-python3 server/vrstreamd.py --record /mnt/nvme/vr         # somewhere with room
-python3 server/vrstreamd.py --record /mnt/nvme/vr --record-time 600 --record-limit 50G
+python3 server/streamframe.py --record auto                 # ~/vrstream-recordings
+python3 server/streamframe.py --record /mnt/nvme/vr         # somewhere with room
+python3 server/streamframe.py --record /mnt/nvme/vr --record-time 600 --record-limit 50G
 ```
 
 Files are named `rec-<session-start>-<chunk>.mp4`, e.g. `rec-20261101-204512-003.mp4`. The prefix is the

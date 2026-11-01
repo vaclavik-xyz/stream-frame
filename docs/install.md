@@ -30,7 +30,10 @@ make layer                                     # → build/libvrcap.so
 install -Dm755 build/libvrcap.so      ~/vrstream/layer/libvrcap.so
 install -Dm644 layer/vrcap_layer.json ~/.local/share/vulkan/implicit_layer.d/vrstream.json
 # edit library_path in that JSON if you did not use the installer (it is relative by default)
-install -Dm755 server/vrstreamd.py    ~/vrstream/server/vrstreamd.py
+install -Dm755 server/streamframe.py  ~/vrstream/server/streamframe.py
+install -Dm644 server/settings.py     ~/vrstream/server/settings.py   # imported by the daemon
+install -Dm644 server/gaze.py         ~/vrstream/server/gaze.py       # imported by the daemon
+install -Dm644 server/vrstreamd.py    ~/vrstream/server/vrstreamd.py  # only for units that still say vrstreamd
 install -Dm644 server/web/index.html  ~/vrstream/server/web/index.html
 install -Dm644 systemd/*.service      ~/.config/systemd/user/
 systemctl --user daemon-reload
@@ -57,8 +60,8 @@ layer fight over presentation — add it only if you see a black capture.
 ## Running the server
 
 ```bash
-python3 server/vrstreamd.py --port 8101 --bitrate 4M --layout mono-flat
-python3 server/vrstreamd.py --help
+python3 server/streamframe.py --port 8101 --bitrate 4M --layout mono-flat
+python3 server/streamframe.py --help
 ```
 
 Useful flags: `--rtsp-url ''` (HLS only), `--token <secret>` (require a token on every route except

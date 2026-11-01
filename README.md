@@ -1,10 +1,14 @@
-# vrstream
+# Stream Frame
 
 **Watch what your headset sees — on any screen, without a capture card.**
 
 A Vulkan layer mirrors the frames the VR compositor is about to present into a shared-memory ring; a
 dependency-free Python server turns that into an HLS stream your phone, TV or browser can open, and (in
 parallel, from the same encode) an RTSP/WebRTC stream with sub-second latency for a player like mpv.
+
+The project is **Stream Frame** and the daemon is `server/streamframe.py`. Paths, service names and the
+old `vrstreamd.py` entry point keep working — the alias is there so nothing built around the first name
+has to move at once.
 
 I wrote it to get a Steam Frame's picture onto a TV through a Steam Deck over HDMI. It works with any
 SteamVR-style compositor that presents through Vulkan, because it hooks `vkQueuePresentKHR` instead of
@@ -79,7 +83,7 @@ also publishes its own headset view into a `v4l2loopback` node — `steamvr-v4l2
 restart and nothing to uninstall**:
 
 ```bash
-python3 server/vrstreamd.py --source v4l2:/dev/video99      # layout defaults to passthrough
+python3 server/streamframe.py --source v4l2:/dev/video99      # layout defaults to passthrough
 ```
 
 Cost of that convenience: 960×1080 per eye instead of 1440×1440, and you get exactly the composed image

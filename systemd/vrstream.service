@@ -7,7 +7,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=%h/vrstream/server
-ExecStart=@PYTHON@ %h/vrstream/server/vrstreamd.py --bitrate 4M
+ExecStart=@PYTHON@ %h/vrstream/server/streamframe.py --bitrate 4M
 Restart=always
 RestartSec=3
 # give the encoder time to finish the segment and exit cleanly
