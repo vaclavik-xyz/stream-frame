@@ -39,10 +39,12 @@ esac
 # with the Deck's own ffmpeg, so the stream works even on a machine that was
 # never set up for it.
 if flatpak info io.mpv.Mpv >/dev/null 2>&1; then
-  set -- --fullscreen --no-border --no-osc --really-quiet --no-terminal \
+  set -- --fullscreen --no-border --no-osc --no-terminal \
          --profile=low-latency --keep-open=no --force-window=yes
-  [ "$mode" != "hls" ] && set -- "$@" --rtsp-transport=tcp
-  exec flatpak run io.mpv.Mpv "$@" "$src"
+  # mpv has no --rtsp-transport (that is ffplay/ffmpeg spelling); passing it
+  # makes mpv exit with status 2 before it opens a window.
+  [ "$mode" != "hls" ] && set -- "$@" --stream-lavf-o=rtsp_transport=tcp
+  exec flatpak run io.mpv.Mpv "$@" "$src" 2>&1 | tee /tmp/streamframe-player.log
 fi
 
 # ffplay has no -nostdin (that is an ffmpeg option); passing it made the player
