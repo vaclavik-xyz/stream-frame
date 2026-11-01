@@ -245,3 +245,19 @@ layout is the cheapest and the ugliest on a TV.
 
 `HTTPServer.server_bind()` calls `socket.getfqdn()`, which blocks when the machine's own hostname does
 not resolve. `Server.server_bind` overrides it; if you see this in your own fork, check `/etc/hosts`.
+
+## The layer is installed, the compositor is running, and nothing is captured
+
+The Vulkan loader skips an implicit layer whose `library_path` does not exist — silently. Move or rebuild
+the layer and the JSON still points at the old file, SteamVR starts normally, and the only symptom is a
+missing ring: the daemon reports `picture.age: null` and the player gets an empty stream. Check the layers
+actually mapped into the compositor before you look anywhere else:
+
+```bash
+ls -l /dev/shm/ | grep -i frames                                  # no ring at all?
+p=$(pgrep -f vrcompositor | head -1); grep -c libvrcap /proc/$p/maps   # 0 means it was never loaded
+python3 -c 'import json,os;d=json.load(open(os.path.expanduser("~/.local/share/vulkan/implicit_layer.d/vrcap.json")));print(d["layer"]["library_path"], os.path.exists(d["layer"]["library_path"]))'
+```
+
+Fix the path (or rebuild into it), then `systemctl --user restart steamvr.service` — the compositor only
+reads the layer list at startup, so an edit while it runs changes nothing.
