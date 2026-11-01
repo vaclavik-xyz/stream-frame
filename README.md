@@ -2,6 +2,9 @@
 
 **Watch what your headset sees — on any screen, without a capture card.**
 
+[![ci](https://github.com/vaclavik-xyz/stream-frame/actions/workflows/ci.yml/badge.svg)](https://github.com/vaclavik-xyz/stream-frame/actions/workflows/ci.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 A Vulkan layer mirrors the frames the VR compositor is about to present into a shared-memory ring; a
 dependency-free Python server turns that into an HLS stream your phone, TV or browser can open, and (in
 parallel, from the same encode) an RTSP/WebRTC stream with sub-second latency for a player like mpv.
@@ -78,9 +81,10 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
   if the compositor is producing full-rate frames while the encoder cannot keep up, the daemon lowers the
   bitrate once or twice instead of stuttering forever (`--adapt`, ring mode only).
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
-- **Tests without hardware.** 127 unit tests for the ring parser, eye-record parser, command builder,
+- **Tests without hardware.** 129 unit tests for the ring parser, eye-record parser, command builder,
   segment numbering, HTTP routes, Range requests, event streaming, settings validation and rollback, and
-  shutdown behaviour — `pytest` runs with no GPU, no headset and no ffmpeg.
+  shutdown behaviour — plus an end-to-end test that fills the ring the way the layer does and checks that
+  a playable segment comes out of ffmpeg. `pytest` needs no GPU and no headset.
 
 ## Two sources: full quality, or no installation at all
 
@@ -100,7 +104,7 @@ SteamVR already mirrors (which is what you want on a TV anyway). Test it first w
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/stream-frame && cd stream-frame
+git clone https://github.com/vaclavik-xyz/stream-frame && cd stream-frame
 ./scripts/install.sh          # --dry-run first if you like
 systemctl --user restart steamvr.service     # layer is picked up at compositor start
 systemctl --user start streamframe.service mediamtx.service
@@ -200,6 +204,36 @@ what this project deliberately is not: [docs/prior-art.md](docs/prior-art.md).
 - **Recording is chunked and blunt.** No transcoding, no trimming, no thumbnails: one `-c copy` MP4 per
   `--record-time` seconds, and a hard kill loses the chunk that was open. It also costs I/O on the same
   eMMC the game is loading from.
+
+## Watching on the TV
+
+On a Steam Deck, `scripts/deck-stream.sh` does the whole dance: it switches the session to the desktop,
+waits for it, plays RTSP fullscreen and can put the Deck back into Game Mode afterwards.
+
+```bash
+deck-stream.sh start    # desktop session + fullscreen mpv
+deck-stream.sh status   # session, player, readers
+deck-stream.sh stop     # back to Game Mode
+```
+
+The Steam non-Steam shortcut (`scripts/make-shortcut.py`) is written and shows up in the library, but this
+Deck's Steam refuses to start it from Game Mode with "game configuration is not available". Until that is
+understood, the script is the route that works — and it survives an SSH disconnect, because the player
+runs in its own systemd unit.
+
+## Tested on
+
+| Machine | OS | What was verified |
+| --- | --- | --- |
+| Steam Frame (ARM64, Adreno 750) | SteamOS 3.x | capture, encode, audio, hotspot, gaze, clips |
+| Steam Deck LCD | SteamOS 3.x, desktop session | RTSP to HDMI over Wi-Fi |
+| MacBook | macOS | player page, settings, clips, the whole test suite |
+
+## The rest of the paperwork
+
+- [CHANGELOG.md](CHANGELOG.md) — what changed and when
+- [SECURITY.md](SECURITY.md) — what it listens on, and where it is safe to run
+- [CONTRIBUTING.md](CONTRIBUTING.md) — running it locally, tests, style
 
 ## License
 
