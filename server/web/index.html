@@ -26,6 +26,10 @@
   #bar button:hover { border-color:var(--accent); color:var(--accent); }
   body.clean #bar, body.clean #hud, body.clean #msg, body.clean #gaze { display:none; }
   #gaze { position:fixed; inset:0; width:100%; height:100%; pointer-events:none; }
+  #stale { position:fixed; left:50%; top:calc(10px + env(safe-area-inset-top)); transform:translateX(-50%);
+           background:#b45309ee; color:#fff; font:600 13px/1.4 system-ui,sans-serif; padding:6px 12px;
+           border-radius:999px; display:none; z-index:6; pointer-events:none }
+  #stale.on { display:block }
   #gazebadge { position:fixed; left:12px; bottom:calc(12px + env(safe-area-inset-bottom));
         font:11px/1 ui-monospace,Menlo,monospace; color:var(--dim); opacity:.85; padding:6px 9px;
         border-radius:8px; background:rgba(10,10,14,.62); display:none; }
@@ -36,6 +40,7 @@
 <video id="v" playsinline autoplay muted controls></video>
 <canvas id="gaze"></canvas>
 <div id="gazebadge"></div>
+<div id="stale"></div>
 <div id="msg">connecting…</div>
 <div id="hud"></div>
 <div id="bar">
@@ -191,9 +196,20 @@
       status = j;
       if (j.fps < 5) say("VR is not rendering — put the headset on or start a game");
       else if (v.currentTime > 0 || (pc && pc.connectionState === "connected")) say("");
+      // the playlist keeps rolling from the last frames, so the server is the only honest clock
+      const pic = j.picture || {};
+      if (pic.frozen && pic.age != null) showStale("picture frozen — last frame " + pic.age.toFixed(0) + " s ago");
+      else if (pic.age != null && pic.age > 3) showStale("picture is " + pic.age.toFixed(0) + " s old");
+      else showStale("");
       renderHud();
     }).catch(() => {});
   }, 3000);
+
+  const staleEl = document.getElementById("stale");
+  function showStale(text) {
+    staleEl.textContent = text;
+    staleEl.classList.toggle("on", !!text);
+  }
 
   function renderHud() {
     if (!hud.classList.contains("on") || !status) return;
@@ -209,6 +225,14 @@
       "encoder   " + (status.encoder ? "<b>on</b>" : "off") + "  " + (status.bitrate || "") + "  " + LAYOUT + "\n" +
       transport +
       "restarts  " + status.restarts + "  (player " + restarts + ")\n" +
+      "picture   " + (status.picture && status.picture.age != null
+        ? status.picture.age.toFixed(1) + " s old (" + status.picture.source + ")"
+          + (status.picture.torn ? "  torn " + status.picture.torn : "")
+        : "no frame yet") + "\n" +
+      "record    " + (status.record && status.record.enabled
+        ? '<a href="' + qs("recordings") + '">' + status.record.files + " file(s), "
+          + (status.record.bytes / 1048576).toFixed(0) + " MB</a>"
+        : "off") + "\n" +
       "viewers   " + status.readers +
       (status.gaze && status.gaze.enabled
         ? "\ngaze      " + (status.gaze.available

@@ -245,8 +245,14 @@ class FakeEncoder:
 
 
 class FakeRing:
+    last_seq = 314
+    torn = 2
+
     def fps(self):
         return 37.5
+
+    def age(self):
+        return 0.4
 
 
 @pytest.fixture()
@@ -616,3 +622,126 @@ def test_ring_refuses_a_frame_overwritten_during_the_copy(ring_file, monkeypatch
     assert (seq, data) == (0, None)
     assert ring.torn == 1
     ring.close()
+
+
+# --------------------------------------------------------------- recording
+
+
+def test_build_cmd_records_mp4_as_an_extra_tee_slave(tmp_path):
+    rec = tmp_path / "rec"
+    cfg = vs.Config(rtsp_url="", record=str(rec))
+    cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(1440, 720, 0)
+    assert "-f" in [cmd[i] for i in range(len(cmd) - 1) if cmd[i + 1] == "tee"]
+    tee = cmd[-1]
+    assert "[f=hls:" in tee and "[f=segment:" in tee
+    assert "segment_format=mp4" in tee
+    assert str(rec) + "/rec-" in tee and "%03d.mp4" in tee
+    assert rec.is_dir()                       # created before ffmpeg is spawned
+
+
+def test_build_cmd_without_record_has_no_mp4_slave():
+    cfg = vs.Config(rtsp_url="")
+    cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(1440, 720, 0)
+    assert "tee" not in cmd and "%03d.mp4" not in " ".join(cmd)
+
+
+def test_record_dir_understands_off_auto_and_paths(tmp_path):
+    assert vs.Config(record="").record_dir() is None
+    assert vs.Config(record="off").record_dir() is None
+    assert vs.Config(record="auto").record_dir().endswith("vrstream-recordings")
+    assert vs.Config(record=str(tmp_path)).record_dir() == str(tmp_path)
+
+
+def test_prune_recordings_deletes_the_oldest_but_keeps_the_open_one(tmp_path):
+    for i in range(4):
+        f = tmp_path / f"rec-20260101-0000{i}-000.mp4"
+        f.write_bytes(b"x" * 1000)
+        os.utime(f, (1000 + i, 1000 + i))
+    (tmp_path / "notes.txt").write_text("not ours")
+
+    removed = vs.prune_recordings(str(tmp_path), 1500)     # room for one chunk only
+    assert removed == 3
+    left = [f.name for f in tmp_path.glob("rec-*.mp4")]
+    assert left == ["rec-20260101-00003-000.mp4"]
+    assert (tmp_path / "notes.txt").exists()               # other files are not touched
+    assert vs.prune_recordings(str(tmp_path), 0) == 0      # never deletes the last chunk
+
+
+def test_recordings_route_lists_and_serves_files(server, tmp_path):
+    base, cfg, _ = server
+    cfg.record = str(tmp_path)
+    (tmp_path / "rec-20260101-1200-000.mp4").write_bytes(b"\x00\x00\x00\x18ftypmp42")
+    (tmp_path / "rec-20260101-1200-001.mp4").write_bytes(b"second")
+
+    code, body, _ = get(base + "/recordings")
+    assert code == 200
+    listing = json.loads(body)
+    assert listing["enabled"] is True and len(listing["files"]) == 2
+    assert listing["files"][0]["url"] == "/recordings/rec-20260101-1200-000.mp4"
+    assert listing["bytes"] == len(b"\x00\x00\x00\x18ftypmp42") + len(b"second")
+
+    code, body, headers = get(base + "/recordings/rec-20260101-1200-001.mp4")
+    assert code == 200 and body == b"second"
+    assert headers["Content-Type"] == "video/mp4"
+    assert "rec-20260101-1200-001.mp4" in headers["Content-Disposition"]
+
+
+def test_recordings_route_refuses_paths_outside_the_folder(server, tmp_path):
+    base, cfg, _ = server
+    cfg.record = str(tmp_path)
+    for bad in ("/recordings/..%2Fetc%2Fpasswd", "/recordings/etc-passwd.mp4",
+                "/recordings/rec-x-000.txt"):
+        assert get(base + bad)[0] == 404
+
+
+def test_status_reports_the_recording_folder(server, tmp_path):
+    base, cfg, _ = server
+    cfg.record = str(tmp_path)
+    (tmp_path / "rec-1-000.mp4").write_bytes(b"x" * 10)
+    status = json.loads(get(base + "/status")[1])
+    assert status["record"]["enabled"] is True
+    assert status["record"]["files"] == 1 and status["record"]["bytes"] == 10
+    assert status["record"]["limit"] == 20 * 1024 ** 3
+
+
+# --------------------------------------------------------------- picture truth
+
+
+def test_status_says_how_old_the_picture_is(server):
+    base, _, _enc = server
+    ring = vs.Handler.ring
+    ring.age = lambda: 0.4
+    picture = json.loads(get(base + "/status")[1])["picture"]
+    assert picture == {"source": "ring", "age": 0.4, "frozen": False, "seq": 314, "torn": 2}
+
+    ring.age = lambda: 7.5
+    assert json.loads(get(base + "/status")[1])["picture"]["frozen"] is True
+
+
+def test_ring_age_is_none_before_the_first_frame(ring_file):
+    path, _slot = ring_file
+    ring = vs.FrameRing(str(path))
+    assert ring.open() and ring.age() is None
+    ring.close()
+
+
+# --------------------------------------------------------------- cpu budget
+
+
+def test_build_cmd_honours_the_thread_limit():
+    cfg = vs.Config(rtsp_url="", threads=3)
+    cmd = vs.Encoder(cfg, vs.FrameRing("/nonexistent")).build_cmd(1440, 720, 0)
+    assert cmd[cmd.index("-threads") + 1] == "3"
+
+
+def test_ffmpeg_is_niced_so_the_game_wins():
+    nice = vs.Encoder._nice(["ffmpeg", "-x"], 10)
+    assert nice == ["nice", "-n", "10", "ffmpeg", "-x"]
+    assert vs.Encoder._nice(["ffmpeg"], 0) == ["ffmpeg"]
+
+
+def test_bitrate_downgrade_stays_close_to_the_original():
+    for value in ("4M", "2500K", "1G", "20M"):
+        original = vs.mem_suffix(value)
+        shrunk = vs.mem_suffix(vs.fmt_size(int(original * 0.7)))
+        assert 0.65 * original <= shrunk <= 0.75 * original

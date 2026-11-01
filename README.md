@@ -12,7 +12,8 @@ reading the display.
 
 ```
 headset ──▶ vrcompositor ──▶ [libvrcap.so] ──▶ /dev/shm ring ──▶ ffmpeg ──┬─▶ HLS   (~6 s, AirPlay, any browser)
-                                                                          └─▶ RTSP ─▶ MediaMTX ─▶ WebRTC (<1 s, mpv/VLC/Deck)
+                                                                          ├─▶ RTSP ─▶ MediaMTX ─▶ WebRTC (<1 s, mpv/VLC/Deck)
+                                                                          └─▶ MP4   (optional recording, no extra encode)
 ```
 
 ## Why two paths instead of one
@@ -48,8 +49,18 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
   driver, no images of the eye — only a direction and two lid values. See [docs/gaze.md](docs/gaze.md).
 - **Gaze as data, not just a dot.** `--gaze-csv auto` appends every estimate to a CSV with wall-clock
   timestamps, so a recording of the video can be lined up with where the wearer was looking.
+- **Recording, from the same encode.** `--record auto` writes the stream to MP4 chunks on disk, served
+  back over HTTP with Range support — one more `tee` branch, no second encode, oldest files pruned past a
+  size cap. See [docs/recording.md](docs/recording.md).
+- **It admits when the picture is old.** `/status` reports how many seconds ago the last frame actually
+  reached the encoder (`picture.age`, `frozen`), because a stuck capture still serves a live-looking HLS
+  playlist from the last frames. In `v4l2:` mode the same number comes from the newest closed segment and
+  is labelled as such.
+- **Leaves the CPU to the game.** ffmpeg runs at `nice 10` (`--nice`), can be capped with `--threads`, and
+  if the compositor is producing full-rate frames while the encoder cannot keep up, the daemon lowers the
+  bitrate once or twice instead of stuttering forever (`--adapt`, ring mode only).
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
-- **Tests without hardware.** 50 unit tests for the ring parser, eye-record parser, command builder,
+- **Tests without hardware.** 68 unit tests for the ring parser, eye-record parser, command builder,
   segment numbering, HTTP routes, Range requests, event streaming and shutdown behaviour — `pytest` runs
   with no GPU, no headset and no ffmpeg.
 
@@ -98,6 +109,8 @@ Details, manual install, environment variables: [docs/install.md](docs/install.m
 | `/gaze` | JSON: latest gaze sample (degrees, lid values, placement in the frame) and reader health |
 | `/gaze.sse` | the same as server-sent events, one event per new estimate — `curl -N …/gaze.sse` |
 | `/gaze.csv` | download the gaze recording so far (needs `--gaze-csv`) |
+| `/recordings` | JSON list of the MP4 chunks with sizes and URLs (needs `--record`) |
+| `/recordings/<name>` | download or stream one chunk, `Range` supported |
 | `/log?e=…` | player telemetry, appended to `/tmp/vrstreamd-client.log` |
 
 ```bash
@@ -118,6 +131,9 @@ curl -s http://<host>:8101/status | python3 -m json.tool
 --gaze-shm /dev/shm/eye-server.mmap            where that record lives
 --gaze-fov 100x90                              degrees the flat picture covers, for the reticle
 --gaze-csv auto|<dir>|<file>                   append gaze samples to a CSV (default: off)
+--record auto|<dir>        --record-time 300   --record-limit 20G
+                                               write MP4 chunks (default: off); docs/recording.md
+--threads 0        --nice 10        --adapt / --no-adapt
 --token <secret>      --bind 0.0.0.0    --port 8101     -v
 ```
 
@@ -147,6 +163,9 @@ what this project deliberately is not: [docs/prior-art.md](docs/prior-art.md).
   declare (`--gaze-fov`); it is not a calibrated projection, and the parser has only been exercised
   against a synthetic record so far — see [docs/gaze.md](docs/gaze.md#honest-status).
 - **HLS is the stable path, WebRTC is the fast one.** They fail independently, on purpose.
+- **Recording is chunked and blunt.** No transcoding, no trimming, no thumbnails: one `-c copy` MP4 per
+  `--record-time` seconds, and a hard kill loses the chunk that was open. It also costs I/O on the same
+  eMMC the game is loading from.
 
 ## License
 

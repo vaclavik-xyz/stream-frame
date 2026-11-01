@@ -89,13 +89,32 @@ Two outputs come from a **single** encode through the `tee` muxer:
 * `-f hls` — 2 s segments, 8-segment window, independent segments, no endlist: a viewer can join
   mid-stream and a 16 s hiccup does not kill the playlist.
 * `-f rtsp` — pushed to MediaMTX on loopback, which re-serves it as RTSP and WebRTC.
+* `-f segment` (only with `--record`) — MP4 chunks of `--record-time` seconds. Fragmented MP4 would
+  survive a hard kill, but the `movflags` do not survive the segment muxer (the files come out
+  undecodable), so plain MP4 it is: a chunk is playable once closed, and a power cut costs one chunk.
+  Same `onfail=ignore` rule: a full disk must not stop the stream.
 
 With `--audio`, a second input (`-f pulse -i <sink>.monitor`) is encoded as one AAC track and mapped into
 both slaves by the same `tee`, so the extra cost is ~1 % of a core, not a second encoder. AAC over RTSP is
 fine for mpv/VLC; browsers refuse AAC in WebRTC, which is why the page falls back to HLS when sound matters.
 
 `onfail=ignore` on the RTSP branch is deliberate: MediaMTX being down or restarting must never take HLS
-with it. One encoder is ~1.2 cores at 720p60; a second one would double that.
+with it. One encoder is ~1.2 cores at 720p60; a second one would double that, which is why recording is a
+third branch of the same encode rather than a second ffmpeg.
+
+ffmpeg is spawned through `nice -n 10`: on the headset the same two-to-four cores have to run the game,
+and an encoder that keeps its priority steals frames from the thing being recorded. `--threads` caps x264
+when the game needs the cores back. If the ring is delivering full-rate frames but the encoder cannot keep
+up, the watchdog lowers the bitrate by 30 % (twice at most) and restarts the encoder — measured only in
+ring mode, because in `v4l2:` mode a slow source is indistinguishable from a slow encoder.
+
+## Picture age (the truth about "is it live")
+
+The HLS playlist keeps rolling from the last frames the encoder received, so a capture that stopped hours
+ago still looks live. `FrameRing.latest()` therefore records when a frame was last handed to the encoder,
+and `/status` publishes `picture.age` (seconds) plus `frozen` (age > 2 s). In `v4l2:` mode nothing in the
+process sees frames directly, so the age is derived from the newest closed `.ts` segment — an upper bound
+of about one `hls_time`, and labelled `source: "segment"` so nobody mistakes it for a measurement.
 
 ## Lifecycle
 

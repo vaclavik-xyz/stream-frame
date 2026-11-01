@@ -121,6 +121,34 @@ device, not the encoder. And this source is the *composited* headset view (one f
 `--layout mono-flat` would crop and unwarp something that is already correct; the daemon therefore defaults
 to `passthrough` in this mode.
 
+## The stream looks live but the picture is frozen
+
+The HLS playlist keeps rolling from the last frames that reached the encoder, so a stalled capture can
+look like a live stream — the page cannot tell either, because the segments are still valid.
+
+Ask the server, which is the only honest clock:
+
+```bash
+curl -s http://<host>:8101/status | python3 -m json.tool | grep -A4 picture
+```
+
+`picture.age` is seconds since a frame was handed to the encoder; `frozen` turns true past 2 s. The player
+shows the same thing as an amber banner ("picture frozen — last frame N s ago"). If `seq` stops moving
+while the headset is worn, the compositor is not presenting: a game that switched to a still menu, a
+compositor hang, or a display that went to sleep. `torn` counts frames refused because the writer
+overwrote the slot mid-copy — a few is normal on a busy machine, a growing number means the encoder is
+falling far behind the compositor.
+
+In `v4l2:` mode the age comes from the newest `.ts` segment, so it is an upper bound of one `hls_time`
+and labelled `source: "segment"`.
+
+## No recordings appear
+
+`/status` → `record.enabled` false means `--record` was not passed. If it is true but `record.files` stays
+at 0, nothing is being encoded (`encoder: false`) — the daemon only encodes on demand, so open the page or
+`curl /wake`. A folder that is not writable only loses the recording: the `segment` branch is
+`onfail=ignore`, the live stream continues, and the reason is in `/tmp/vrstreamd-ffmpeg.log`.
+
 ## The gaze reticle never appears
 
 `/status` says what the reader thinks:

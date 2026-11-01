@@ -28,6 +28,7 @@ import json
 import mmap
 import os
 import re
+import shutil
 import signal
 import socketserver
 import struct
@@ -101,6 +102,49 @@ def mem_suffix(value: str) -> int:
     return int(n * mult)
 
 
+def fmt_size(n: int) -> str:
+    """Bytes back into the '4M' / '2500K' form ffmpeg takes."""
+    for suffix, unit in (("G", 1024 ** 3), ("M", 1024 ** 2), ("K", 1024)):
+        if n >= unit:
+            value = n / unit
+            # one decimal: rounding 2.5M down to 2M would silently cost a fifth of the bitrate
+            return f"{value:.1f}".rstrip("0").rstrip(".") + suffix
+    return str(max(1, n))
+
+
+def record_files(directory: str) -> list[dict]:
+    """Closed mp4 chunks, oldest first. The open chunk is included: it is the newest file."""
+    try:
+        names = sorted(n for n in os.listdir(directory) if n.startswith("rec-") and n.endswith(".mp4"))
+    except OSError:
+        return []
+    out = []
+    for name in names:
+        try:
+            st = os.stat(os.path.join(directory, name))
+        except OSError:
+            continue
+        out.append({"name": name, "bytes": st.st_size, "mtime": st.st_mtime})
+    out.sort(key=lambda f: f["mtime"])
+    return out
+
+
+def prune_recordings(directory: str, limit: int) -> int:
+    """Delete the oldest chunks once the folder exceeds the limit; never the newest one."""
+    files = record_files(directory)
+    total = sum(f["bytes"] for f in files)
+    removed = 0
+    while files and total > limit and len(files) > 1:
+        oldest = files.pop(0)
+        try:
+            os.unlink(os.path.join(directory, oldest["name"]))
+        except OSError:
+            break
+        total -= oldest["bytes"]
+        removed += 1
+    return removed
+
+
 @dataclass
 class Config:
     port: int = 8101
@@ -115,6 +159,12 @@ class Config:
     gaze_shm: str = "/dev/shm/eye-server.mmap"
     gaze_fov: str = "100x90"           # approximate, only used to place the reticle
     gaze_csv: str = ""                 # "" = no recording, "auto" = <hls_dir>/gaze.csv, or a path
+    threads: int = 0                   # x264 threads, 0 = whatever x264 picks
+    nice: int = 10                     # run ffmpeg at this nice level so a game keeps the CPU it needs
+    adapt: bool = True                 # lower the bitrate once if the encoder cannot keep up
+    record: str = ""                   # "" = off, "auto" = ~/vrstream-recordings, or a directory
+    record_time: int = 300             # seconds per file; the mp4 is only playable once closed
+    record_limit: str = "20G"          # oldest files are pruned past this
     shm: str = "/dev/shm/vrstream_frames"
     hls_dir: str = "/tmp/vrstream-hls"
     hls_time: int = 2
@@ -145,6 +195,21 @@ class Config:
         if mode in ("auto", "on", "yes", "1"):
             return self.gaze_shm if os.path.exists(self.gaze_shm) else None
         return mode
+
+    def record_dir(self) -> str | None:
+        """Directory for the mp4 recording, or None when recording is off."""
+        value = (self.record or "").strip()
+        if not value or value in ("0", "off", "no"):
+            return None
+        if value == "auto":
+            return os.path.expanduser("~/vrstream-recordings")
+        return os.path.expanduser(value)
+
+    def record_limit_bytes(self) -> int:
+        try:
+            return mem_suffix(self.record_limit)
+        except ValueError:
+            return 20 * 1024 ** 3
 
     def gaze_csv_path(self) -> str | None:
         """Where gaze samples are appended, or None when recording is off."""
@@ -189,6 +254,8 @@ class FrameRing:
         self._mm: mmap.mmap | None = None
         self._lock = threading.Lock()
         self.torn = 0                       # frames refused because the writer overwrote them mid-copy
+        self.last_at = 0.0                  # when the last good frame was handed to the encoder
+        self.last_seq = 0
         self.width = self.height = 0
         self.slot_size = 0
         self.inode = 0
@@ -234,6 +301,14 @@ class FrameRing:
         except OSError:
             return True
 
+    def age(self) -> float | None:
+        """Seconds since the last frame was handed to the encoder, or None if none ever was.
+
+        This is the honest answer to "is the picture live": the compositor keeps the HLS playlist
+        rolling from the last frames it saw, so a stuck capture still looks like a live stream.
+        """
+        return time.monotonic() - self.last_at if self.last_at else None
+
     def _read_header(self) -> bool:
         if self._mm is None:
             return False
@@ -276,6 +351,7 @@ class FrameRing:
             if self._seq(best_slot) != best_seq:
                 self.torn += 1
                 return last_seq, None
+            self.last_seq, self.last_at = best_seq, time.monotonic()
             return best_seq, data
 
     def fps(self, sample: float = 0.35) -> float:
@@ -391,6 +467,8 @@ class Encoder:
         vf = cfg.filter_chain()
         if vf:
             cmd += ["-vf", vf]
+        if cfg.threads:
+            cmd += ["-threads", str(cfg.threads)]
         cmd += ["-c:v", "libx264", "-preset", cfg.preset, "-tune", "zerolatency",
                 "-maxrate", cfg.bitrate, "-bufsize", str(mem_suffix(cfg.bitrate) * 2),
                 "-g", str(max(1, cfg.fps // 2)), "-b:v", cfg.bitrate, "-pix_fmt", "yuv420p"]
@@ -405,15 +483,27 @@ class Encoder:
                "-hls_flags", "delete_segments+omit_endlist+independent_segments",
                playlist]
         maps = ["-map", "0:v"] + (["-map", "1:a"] if audio else [])
-        if not cfg.rtsp_url:
+        rec = cfg.record_dir()
+        if not cfg.rtsp_url and not rec:
             return cmd + maps + hls
-        # one encode, two outputs; onfail=ignore keeps HLS alive when MediaMTX is down
+        # one encode, up to three outputs; onfail=ignore keeps HLS alive when the others break
         opts = (f"hls_time={cfg.hls_time}:hls_list_size={cfg.hls_window}:hls_delete_threshold=4:"
                 f"start_number={start_no}:"
                 f"hls_flags=delete_segments+omit_endlist+independent_segments:"
                 f"hls_segment_filename={cfg.hls_dir}/live%d.ts")
-        tee = f"[f=hls:{opts}]{playlist}|[f=rtsp:onfail=ignore:rtsp_transport=tcp]{cfg.rtsp_url}"
-        return cmd + ["-f", "tee"] + maps + [tee]
+        slaves = [f"[f=hls:{opts}]{playlist}"]
+        if cfg.rtsp_url:
+            slaves.append(f"[f=rtsp:onfail=ignore:rtsp_transport=tcp]{cfg.rtsp_url}")
+        if rec:
+            # mp4 chunks, not one long file: each chunk is playable as soon as it is closed, and a
+            # power cut costs the open chunk instead of the whole session. fragmented mp4 flags do
+            # not survive the segment muxer (the files come out undecodable), so plain mp4 it is.
+            os.makedirs(rec, exist_ok=True)
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            ropts = (f"segment_time={max(10, int(cfg.record_time))}:segment_format=mp4:"
+                     f"reset_timestamps=1")
+            slaves.append(f"[f=segment:{ropts}:onfail=ignore]{rec}/rec-{stamp}-%03d.mp4")
+        return cmd + ["-f", "tee"] + maps + ["|".join(slaves)]
 
     def _progress_path(self) -> str:
         return f"/tmp/vrstreamd-progress-{self.cfg.port}.log"
@@ -490,7 +580,7 @@ class Encoder:
         if cfg.verbose:
             log("encoder:", " ".join(cmd))
         fferr = self._ffmpeg_log()
-        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=fferr)
+        proc = subprocess.Popen(self._nice(cmd, cfg.nice), stdin=subprocess.PIPE, stderr=fferr)
         with self._lock:
             self._proc = proc
         self.sessions += 1
@@ -518,7 +608,7 @@ class Encoder:
         if cfg.verbose:
             log("encoder:", " ".join(cmd))
         fferr = self._ffmpeg_log()
-        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stderr=fferr)
+        proc = subprocess.Popen(self._nice(cmd, cfg.nice), stdin=subprocess.DEVNULL, stderr=fferr)
         with self._lock:
             self._proc = proc
         self.sessions += 1
@@ -544,7 +634,14 @@ class Encoder:
                 fferr.close()
 
     @staticmethod
-    def _ffmpeg_log():
+    @staticmethod
+    def _nice(cmd: list[str], level: int) -> list[str]:
+        """ffmpeg must lose every CPU race against the game it is recording."""
+        if level and shutil.which("nice"):
+            return ["nice", "-n", str(level)] + cmd
+        return cmd
+
+    def _ffmpeg_log(self):
         path = "/tmp/vrstreamd-ffmpeg.log"
         try:
             if os.path.exists(path) and os.path.getsize(path) > 5 * 1024 * 1024:
@@ -753,13 +850,42 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
-    def _serve_segment(self, path: str, head: bool) -> None:
+    def _picture_state(self) -> dict:
+        if self.cfg.v4l2_device():
+            # a device is only observed through ffmpeg; the newest closed segment is our clock, so
+            # the age is an upper bound (up to one hls_time stale) — say so instead of pretending
+            newest = 0.0
+            try:
+                for name in os.listdir(self.cfg.hls_dir):
+                    if name.endswith(".ts"):
+                        newest = max(newest, os.path.getmtime(os.path.join(self.cfg.hls_dir, name)))
+            except OSError:
+                pass
+            age = max(0.0, time.time() - newest) if newest else None
+            return {"source": "segment", "age": None if age is None else round(age, 1),
+                    "frozen": bool(age is not None and age > 3 * max(1, self.cfg.hls_time)),
+                    "seq": None, "torn": 0}
+        age = self.ring.age()
+        return {"source": "ring", "age": None if age is None else round(age, 1),
+                "frozen": bool(age is not None and age > 2.0),
+                "seq": self.ring.last_seq, "torn": self.ring.torn}
+
+    def _record_status(self) -> dict:
+        directory = self.cfg.record_dir()
+        if not directory:
+            return {"enabled": False}
+        files = record_files(directory)
+        return {"enabled": True, "dir": directory, "files": len(files),
+                "bytes": sum(f["bytes"] for f in files), "limit": self.cfg.record_limit_bytes()}
+
+    def _serve_file(self, path: str, head: bool, ctype: str = "video/mp2t",
+                    attachment: str | None = None) -> None:
         """Segments with single-range support: AVPlayer asks for ranges even on live HLS."""
         try:
             size = os.path.getsize(path)
             fh = open(path, "rb")
         except OSError:
-            self.send_error(404, "segment not found")
+            self.send_error(404, "file not found")
             return
         start, end, code = 0, size - 1, 200
         rng = self.headers.get("Range", "")
@@ -785,7 +911,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 start, end, code = 0, size - 1, 200
         with fh:
             self.send_response(code)
-            self.send_header("Content-Type", "video/mp2t")
+            self.send_header("Content-Type", ctype)
+            if attachment:
+                self.send_header("Content-Disposition", f'attachment; filename="{attachment}"')
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Content-Length", str(end - start + 1))
             if code == 206:
@@ -847,7 +975,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 gaze.update(self.gaze.info())
             if self.gaze_rec is not None:
                 gaze["csv"] = self.gaze_rec.info()
-            self._json({"fps": round(fps, 1), "gaze": gaze, **self.enc.status()}, head=head)
+            self._json({"fps": round(fps, 1), "gaze": gaze, "record": self._record_status(),
+                        "picture": self._picture_state(), **self.enc.status()}, head=head)
             return
         if path == "/gaze":
             self._gaze_json(head)
@@ -857,6 +986,23 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         if path == "/gaze.csv":
             self._gaze_file(head)
+            return
+        if path == "/recordings":
+            files = record_files(self.cfg.record_dir() or "")
+            self._json({"enabled": bool(self.cfg.record_dir()), "dir": self.cfg.record_dir() or "",
+                        "limit": self.cfg.record_limit_bytes(),
+                        "bytes": sum(f["bytes"] for f in files),
+                        "files": [{**f, "url": "/recordings/" + f["name"]} for f in files]},
+                       head=head)
+            return
+        if path.startswith("/recordings/"):
+            name = path[len("/recordings/"):]
+            directory = self.cfg.record_dir()
+            if (not directory or "/" in name or ".." in name
+                    or not name.startswith("rec-") or not name.endswith(".mp4")):
+                self._json({"error": "no such recording"}, 404, head=head)
+                return
+            self._serve_file(os.path.join(directory, name), head, "video/mp4", name)
             return
         if path in ("/", "/index.html"):
             self._page(head)
@@ -879,7 +1025,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self.end_headers()
                 return
         if path.endswith(".ts"):
-            self._serve_segment(os.path.join(self.cfg.hls_dir, os.path.basename(path)), head)
+            self._serve_file(os.path.join(self.cfg.hls_dir, os.path.basename(path)), head)
             return
         if head:
             self.send_error(405, "HEAD not supported here")
@@ -1069,11 +1215,35 @@ def clear_hls(cfg: Config) -> None:
                 pass
 
 
-def watchdog(cfg: Config, enc: Encoder) -> None:
+def watchdog(cfg: Config, enc: Encoder, ring: FrameRing) -> None:
     """Idle stop + recovery of the RTSP branch. Never raises out of the loop."""
-    lost_rtsp, rtsp_pause_until = 0, 0.0
+    lost_rtsp, rtsp_pause_until, ticks = 0, 0.0, 0
+    slow, downgrades = 0, 0
     while True:
         time.sleep(5)
+        ticks += 1
+        if cfg.adapt and enc.alive() and ticks % 2 == 0 and not cfg.v4l2_device():
+            # the compositor has to be producing full-rate frames: if the *game* runs at 40 fps,
+            # the encoder will too, and that is not starvation — lowering the bitrate would only
+            # make a healthy picture worse
+            src = ring.fps()
+            got = enc.encoder_fps()
+            starving = bool(src and got and src > 0.9 * cfg.fps and got < 0.85 * cfg.fps)
+            slow = slow + 1 if starving else 0
+            if slow >= 3 and downgrades < 2 and enc.uptime() > 20:
+                bitrate = max(1_500_000, int(mem_suffix(cfg.bitrate) * 0.7))
+                cfg.bitrate = fmt_size(bitrate)
+                downgrades += 1
+                slow = 0
+                log(f"encoder cannot keep up ({got:.0f} of {cfg.fps} fps); "
+                    f"lowering to {cfg.bitrate} and restarting")
+                enc.restart()
+        if ticks % 6 == 0:                     # every 30 s is plenty for a size cap
+            rec_dir = cfg.record_dir()
+            if rec_dir:
+                removed = prune_recordings(rec_dir, cfg.record_limit_bytes())
+                if removed:
+                    log(f"record: pruned {removed} old chunk(s) to stay under {cfg.record_limit}")
         try:
             if not enc.wanted():
                 continue
@@ -1127,6 +1297,18 @@ def build_config(argv=None) -> Config:
                     help='"ring" = Vulkan layer shm (default), "v4l2:/dev/video99" = SteamVR '
                          'headset view, no layer needed')
     ap.add_argument("--vf", default=None, help="raw ffmpeg filter chain (overrides --layout)")
+    ap.add_argument("--threads", type=int, default=int(os.environ.get("VRSTREAM_THREADS", 0)),
+                    help="x264 threads (0 = auto)")
+    ap.add_argument("--nice", type=int, default=int(os.environ.get("VRSTREAM_NICE", 10)),
+                    help="nice level for ffmpeg so a game keeps the CPU (0 = off)")
+    ap.add_argument("--adapt", action=argparse.BooleanOptionalAction, default=True,
+                    help="lower the bitrate once or twice when the encoder cannot keep up")
+    ap.add_argument("--record", default=os.environ.get("VRSTREAM_RECORD", ""),
+                    help="mp4 recording dir: a path, 'auto' (~/vrstream-recordings) or '' for off")
+    ap.add_argument("--record-time", type=int, default=300,
+                    help="seconds per mp4 chunk (each chunk is playable once closed)")
+    ap.add_argument("--record-limit", default="20G",
+                    help="prune the oldest chunks past this total, e.g. 20G")
     ap.add_argument("--shm", default=os.environ.get("VRSTREAM_CAP_SHM", "/dev/shm/vrstream_frames"))
     ap.add_argument("--hls-dir", default=os.environ.get("VRSTREAM_HLS", "/tmp/vrstream-hls"))
     ap.add_argument("--hls-time", type=int, default=2)
@@ -1206,7 +1388,7 @@ def main(argv=None) -> int:
     Handler.gaze, Handler.gaze_rec = gaze_src, gaze_rec
     srv = Server((cfg.bind, cfg.port), Handler)
 
-    threading.Thread(target=watchdog, args=(cfg, enc), daemon=True).start()
+    threading.Thread(target=watchdog, args=(cfg, enc, ring), daemon=True).start()
 
     stopping = threading.Event()
 
