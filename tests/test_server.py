@@ -243,6 +243,11 @@ class FakeEncoder:
     def alive(self):
         return False
 
+    def stop(self, wait: float = 0.0):
+        pass
+
+    last_error = ""
+
 
 class FakeRing:
     last_seq = 314
@@ -260,6 +265,7 @@ def server(tmp_path):
     cfg = vs.Config(hls_dir=str(tmp_path), page="<html>page __TOKEN__ __WEBRTC__</html>")
     enc = FakeEncoder()
     vs.Handler.cfg, vs.Handler.enc, vs.Handler.ring = cfg, enc, FakeRing()
+    vs.Handler.runtime = vs.Runtime(cfg, enc, FakeRing())
     srv = vs.Server(("127.0.0.1", 0), vs.Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = f"http://127.0.0.1:{srv.server_address[1]}"
@@ -788,3 +794,56 @@ def test_recordings_marks_the_chunk_that_is_still_written(server, tmp_path):
     enc.alive = lambda: False
     files = json.loads(get(base + "/recordings")[1])["files"]
     assert [f["open"] for f in files] == [False, False]
+
+
+# --------------------------------------------------------------- settings endpoint
+
+
+def post(url, payload, timeout=5):
+    body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=body, method="POST",
+                                headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        return e.code, json.loads(e.read())
+
+
+def test_settings_get_publishes_ranges_and_current_values(server):
+    base, cfg, _ = server
+    code, body, _ = get(base + "/api/settings")
+    payload = json.loads(body)
+    assert code == 200
+    assert payload["settings"]["bitrate"] == cfg.bitrate
+    assert payload["limits"]["bitrate"]["min"] == 1024 ** 2
+    assert "stereo" in payload["layouts"]
+
+
+def test_settings_need_the_token_when_one_is_set(server):
+    base, cfg, _ = server
+    cfg.token = "s3cret"
+    assert get(base + "/api/settings")[0] == 401
+    assert post(base + "/api/settings", {"gaze": False})[0] == 401
+    assert get(base + "/api/settings?token=s3cret")[0] == 200
+
+
+def test_settings_reject_a_value_that_would_break_the_picture(server):
+    base, cfg, _ = server
+    code, body = post(base + "/api/settings", {"bitrate": "150k"})
+    assert code == 400 and "bitrate" in body["error"]
+    assert cfg.bitrate == "4M"
+
+
+def test_settings_reject_garbage_json(server):
+    base, _, _ = server
+    code, body = post(base + "/api/settings", b"{not json")
+    assert code == 400 and "JSON" in body["error"]
+
+
+def test_a_live_setting_is_applied_without_restarting_the_encoder(server):
+    base, cfg, _ = server
+    code, body = post(base + "/api/settings", {"gaze": False})
+    assert code == 200 and body["ok"] is True
+    assert body["restarted"] is False
+    assert cfg.gaze == "off"

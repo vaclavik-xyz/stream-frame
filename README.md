@@ -56,13 +56,20 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
   reached the encoder (`picture.age`, `frozen`), because a stuck capture still serves a live-looking HLS
   playlist from the last frames. In `v4l2:` mode the same number comes from the newest closed segment and
   is labelled as such.
+- **A player that can change the pipeline, carefully.** `--settings auto` lets the page change bitrate,
+  fps, layout, threads, nice, adapt, recording and gaze. Every value is validated against a range, the
+  encoder is restarted and watched for eight seconds, and a setting that does not survive is rolled back
+  before it can be remembered. The file is written only after a value has actually run. See
+  [docs/settings.md](docs/settings.md).
+- **It looks like a device.** A quiet chip row (transport, rate, how far behind the picture is, a `rec`
+  timer), a vignette and a wordmark — fading out when you are watching, back when you move.
 - **Leaves the CPU to the game.** ffmpeg runs at `nice 10` (`--nice`), can be capped with `--threads`, and
   if the compositor is producing full-rate frames while the encoder cannot keep up, the daemon lowers the
   bitrate once or twice instead of stuttering forever (`--adapt`, ring mode only).
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
-- **Tests without hardware.** 70 unit tests for the ring parser, eye-record parser, command builder,
-  segment numbering, HTTP routes, Range requests, event streaming and shutdown behaviour — `pytest` runs
-  with no GPU, no headset and no ffmpeg.
+- **Tests without hardware.** 93 unit tests for the ring parser, eye-record parser, command builder,
+  segment numbering, HTTP routes, Range requests, event streaming, settings validation and rollback, and
+  shutdown behaviour — `pytest` runs with no GPU, no headset and no ffmpeg.
 
 ## Two sources: full quality, or no installation at all
 
@@ -110,6 +117,7 @@ Details, manual install, environment variables: [docs/install.md](docs/install.m
 | `/gaze.sse` | the same as server-sent events, one event per new estimate — `curl -N …/gaze.sse` |
 | `/gaze.csv` | download the gaze recording so far (needs `--gaze-csv`) |
 | `/recordings` | JSON list of the MP4 chunks with sizes and URLs (needs `--record`) |
+| `/api/settings` | `GET` current values + ranges, `POST` a change (token) |
 | `/recordings/<name>` | download or stream one chunk, `Range` supported; the newest one is `"open": true` until the encoder closes it |
 | `/log?e=…` | player telemetry, appended to `/tmp/vrstreamd-client.log` |
 
@@ -134,6 +142,7 @@ curl -s http://<host>:8101/status | python3 -m json.tool
 --record auto|<dir>        --record-time 300   --record-limit 20G
                                                write MP4 chunks (default: off); docs/recording.md
 --threads 0        --nice 10        --adapt / --no-adapt
+--settings auto|<path>|''  --no-settings      where player changes are remembered
 --token <secret>      --bind 0.0.0.0    --port 8101     -v
 ```
 

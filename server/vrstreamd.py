@@ -41,6 +41,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlparse
 
+import settings as prefs
 from gaze import EyeSource, GazeRecorder
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -175,6 +176,7 @@ class Config:
     mediamtx_api: str = "http://127.0.0.1:9997"
     webrtc_url: str = ""               # shown on the page, e.g. http://host:8889/vr
     token: str = ""
+    settings: str = "auto"             # where verified settings are stored; "" turns persistence off
     verbose: bool = False
     page: str = field(default="")
 
@@ -773,6 +775,112 @@ class Encoder:
 LAST_REQUEST = 0.0
 
 
+class Runtime:
+    """Everything a settings change may touch: the encoder, the eye reader and the saved file.
+
+    A change only counts as done once the new pipeline has been seen running; if it does not survive,
+    the previous values go back and the caller gets an error instead of a stream that quietly died.
+    """
+
+    def __init__(self, cfg: Config, enc: Encoder, ring: FrameRing):
+        self.cfg, self.enc, self.ring = cfg, enc, ring
+        self.lock = threading.Lock()       # two changes at once would fight over the same encoder
+        self.notes: list[str] = []
+
+    # -- gaze ---------------------------------------------------------------
+    def start_gaze(self) -> None:
+        self.stop_gaze()
+        path = self.cfg.gaze_source()
+        if not path:
+            if self.cfg.gaze not in ("off", "", "0", "no"):
+                log(f"gaze: {self.cfg.gaze_shm} not present, reticle stays off")
+            return
+        src = EyeSource(path)
+        rec = None
+        csv_path = self.cfg.gaze_csv_path()
+        if csv_path:
+            rec = GazeRecorder(csv_path)
+            if rec.start():
+                src.on_sample = rec.write
+                log(f"gaze: recording to {csv_path}")
+            else:
+                log(f"gaze: cannot record — {rec.error}")
+                rec = None
+        if src.start():
+            log(f"gaze: reading {path} (abi {src.version})")
+        else:
+            log(f"gaze: unavailable — {src.error}")
+            src = None
+            if rec is not None:
+                rec.stop()
+                rec = None
+        # the request handlers read these two straight off the class; one writer keeps them honest
+        Handler.gaze, Handler.gaze_rec = src, rec
+
+    def stop_gaze(self) -> None:
+        for obj in (Handler.gaze, Handler.gaze_rec):
+            if obj is not None:
+                obj.stop()
+        Handler.gaze, Handler.gaze_rec = None, None
+
+    def shutdown(self) -> None:
+        self.stop_gaze()
+
+    # -- settings -----------------------------------------------------------
+    def describe(self) -> dict:
+        return {"settings": prefs.current(self.cfg), "limits": prefs.LIMITS,
+                "layouts": sorted(LAYOUTS), "persisted": prefs.settings_path(self.cfg),
+                "restart_fields": sorted(prefs.ENCODER_FIELDS)}
+
+    def change(self, payload: dict) -> dict:
+        """Validate, apply, prove it runs, persist — in that order, with rollback in the middle."""
+        values = prefs.validate(payload)              # ValueError -> 400, nothing touched
+        with self.lock:
+            self.notes = []
+            before = prefs.snapshot(self.cfg, values)
+            prefs.apply(self.cfg, values)
+            restarted = False
+            try:
+                # validate the folder on every change, not only when recording is switched on:
+                # a path that became unwritable should not be discovered at the next chunk boundary
+                if self.cfg.record_dir():
+                    prefs.check_record_dir(self.cfg)
+                if set(values) & prefs.ENCODER_FIELDS:
+                    restarted = True
+                    ok, why = self._restart_verified()
+                    if not ok:
+                        raise RuntimeError(why)
+                if "gaze" in values:
+                    self.start_gaze() if values["gaze"] else self.stop_gaze()
+            except (ValueError, RuntimeError):
+                prefs.restore(self.cfg, before)
+                if restarted:
+                    self._restart_verified()          # put the pipeline that worked back
+                if "gaze" in values:
+                    self.start_gaze() if before.get("gaze") else self.stop_gaze()
+                raise
+            path = prefs.settings_path(self.cfg)
+            if path:
+                try:
+                    # only what just ran: a value that failed the check above never reaches the disk
+                    prefs.save(path, prefs.current(self.cfg))
+                except OSError as exc:
+                    self.notes.append(f"applied, but not saved: {exc}")
+            return {"settings": prefs.current(self.cfg), "restarted": restarted,
+                    "notes": self.notes}
+
+    def _restart_verified(self) -> tuple[bool, str]:
+        """Watch the new pipeline: one that dies at once is a bad setting, not a slow start."""
+        self.enc.stop(wait=4.0)
+        self.enc.ensure()
+        deadline = time.time() + 8.0
+        while time.time() < deadline:
+            time.sleep(0.25)
+            if not self.enc.alive():
+                return False, self.enc.last_error or "the encoder stopped right after the change"
+        return (True, "") if self.enc.alive() else (False, "the encoder did not start")
+
+
 def log(*parts: object) -> None:
     print(time.strftime("%H:%M:%S"), *parts, flush=True)
 
@@ -783,6 +891,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     cfg: Config
     enc: Encoder
     ring: FrameRing
+    runtime: Runtime
     gaze: EyeSource | None = None
     gaze_rec: GazeRecorder | None = None
 
@@ -892,7 +1001,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return {"enabled": False}
         files = record_files(directory)
         return {"enabled": True, "dir": directory, "files": len(files),
-                "bytes": sum(f["bytes"] for f in files), "limit": self.cfg.record_limit_bytes()}
+                "bytes": sum(f["bytes"] for f in files), "limit": self.cfg.record_limit_bytes(),
+                # wall clock of the running session: what the REC timer counts from
+                "since": int(self.enc.started_at) if getattr(self.enc, "started_at", 0) else None}
 
     def _serve_file(self, path: str, head: bool, ctype: str = "video/mp2t",
                     attachment: str | None = None) -> None:
@@ -950,8 +1061,54 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 remaining -= len(chunk)
 
     # -- routing ------------------------------------------------------------
+    def _body(self, limit: int = 8192) -> dict:
+        """Read a small JSON object from the request body."""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0:
+            raise ValueError("empty body")
+        if length > limit:
+            raise ValueError(f"body larger than {limit} bytes")
+        raw = self.rfile.read(length)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("body is not valid JSON") from None
+        if not isinstance(data, dict):
+            raise ValueError("expected a JSON object")
+        return data
+
+    def do_POST(self):
+        global LAST_REQUEST
+        url = urlparse(self.path)
+        query = parse_qs(url.query)
+        if url.path != "/api/settings":
+            self._json({"error": "not found"}, 404)
+            return
+        if not self._authorized(query):
+            self._json({"error": "unauthorized"}, 401)
+            return
+        try:
+            payload = self._body()
+        except ValueError as exc:
+            self._json({"error": str(exc)}, 400)
+            return
+        try:
+            result = self.runtime.change(payload)
+        except ValueError as exc:                 # validation said no: nothing was touched
+            self._json({"error": str(exc), "settings": prefs.current(self.cfg)}, 400)
+            return
+        except RuntimeError as exc:               # applied, did not survive, put back
+            self._json({"error": str(exc), "rolled_back": True,
+                        "settings": prefs.current(self.cfg)}, 409)
+            return
+        LAST_REQUEST = time.time()
+        self._json({"ok": True, **result})
+
     def do_GET(self):
-        self._route(head=False)
+        self._route(False)
 
     def do_HEAD(self):
         self._route(head=True)
@@ -983,6 +1140,9 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         LAST_REQUEST = time.time()
         self.enc.ensure()
 
+        if path == "/api/settings":
+            self._json(self.runtime.describe(), head=head)
+            return
         if path == "/status":
             # in ring mode capture fps is sampled from the ring; a device is measured by ffmpeg
             fps = self.enc.encoder_fps() if self.cfg.v4l2_device() else self.ring.fps()
@@ -1343,9 +1503,16 @@ def build_config(argv=None) -> Config:
     ap.add_argument("--mediamtx-api", default="http://127.0.0.1:9997")
     ap.add_argument("--webrtc-url", default=os.environ.get("VRSTREAM_WEBRTC", ""))
     ap.add_argument("--token", default=os.environ.get("VRSTREAM_TOKEN", ""))
+    ap.add_argument("--settings", default=os.environ.get("VRSTREAM_SETTINGS", "auto"),
+                    help='where settings changed from the player are stored: "auto" '
+                         '(~/.config/streamframe/settings.json), a path, or "" for memory only')
+    ap.add_argument("--no-settings", action="store_true",
+                    help="ignore the stored file and do not write one (escape hatch)")
     ap.add_argument("-v", "--verbose", action="store_true")
     a = ap.parse_args(argv)
 
+    if a.no_settings:
+        a.settings = ""
     mem_suffix(a.bitrate)                      # fail fast on a bad bitrate
     cfg = Config(**{k: v for k, v in vars(a).items() if k in Config.__dataclass_fields__})
     if cfg.source not in ("ring", "") and not cfg.v4l2_device():
@@ -1385,29 +1552,21 @@ def main(argv=None) -> int:
     ring.open()
     enc = Encoder(cfg, ring)
 
-    gaze_src = gaze_rec = None
-    gaze_path = cfg.gaze_source()
-    if gaze_path:
-        gaze_src = EyeSource(gaze_path)
-        csv_path = cfg.gaze_csv_path()
-        if csv_path:
-            gaze_rec = GazeRecorder(csv_path)
-            if gaze_rec.start():
-                gaze_src.on_sample = gaze_rec.write
-                log(f"gaze: recording to {csv_path}")
-            else:
-                log(f"gaze: cannot record — {gaze_rec.error}")
-                gaze_rec = None
-        if gaze_src.start():
-            log(f"gaze: reading {gaze_path} (abi {gaze_src.version})")
+    # values that a previous session proved to work; a broken file is ignored, not fatal
+    stored = prefs.load(prefs.settings_path(cfg) or "")
+    if stored:
+        try:
+            values = prefs.validate(stored)
+        except ValueError as exc:
+            log(f"settings: ignoring {prefs.settings_path(cfg)} — {exc}")
         else:
-            log(f"gaze: unavailable — {gaze_src.error}")
-            gaze_src = None
-    elif cfg.gaze not in ("off", "", "0", "no"):
-        log(f"gaze: {cfg.gaze_shm} not present, reticle stays off")
+            prefs.apply(cfg, values)
+            log(f"settings: {len(values)} stored value(s) applied from {prefs.settings_path(cfg)}")
 
     Handler.cfg, Handler.enc, Handler.ring = cfg, enc, ring
-    Handler.gaze, Handler.gaze_rec = gaze_src, gaze_rec
+    runtime = Runtime(cfg, enc, ring)
+    Handler.runtime = runtime
+    runtime.start_gaze()
     srv = Server((cfg.bind, cfg.port), Handler)
 
     threading.Thread(target=watchdog, args=(cfg, enc, ring), daemon=True).start()
@@ -1419,10 +1578,7 @@ def main(argv=None) -> int:
             return
         stopping.set()
         enc.shutdown()
-        if gaze_src is not None:
-            gaze_src.stop()
-        if gaze_rec is not None:
-            gaze_rec.stop()
+        runtime.shutdown()
         # shutdown() waits for serve_forever() to return: calling it from this thread deadlocks
         threading.Thread(target=srv.shutdown, daemon=True).start()
 
