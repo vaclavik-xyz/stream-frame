@@ -41,6 +41,7 @@ import urllib.request
 from dataclasses import dataclass, field
 from urllib.parse import parse_qs, urlparse
 
+import clip as clips
 import hotspot
 import settings as prefs
 from gaze import EyeSource, GazeRecorder
@@ -180,6 +181,7 @@ class Config:
     hls_dir: str = "/tmp/streamframe-hls"
     hls_time: int = 2
     hls_window: int = 8
+    clip_window: float = 90.0          # seconds of history kept aside so a clip can reach back
     idle: float = 120.0
     audio: str = ""                    # "" = off, "auto" = default sink monitor, or a pulse source
     rtsp_url: str | None = "rtsp://127.0.0.1:8554/vr"
@@ -1126,7 +1128,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         global LAST_REQUEST
         url = urlparse(self.path)
         query = parse_qs(url.query)
-        if url.path != "/api/settings":
+        if url.path not in ("/api/settings", "/api/clip"):
             self._json({"error": "not found"}, 404)
             return
         if not self._authorized(query):
@@ -1134,8 +1136,20 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return
         try:
             payload = self._body()
-        except ValueError as exc:
-            self._json({"error": str(exc)}, 400)
+        except ValueError as exc:                 # /api/clip takes an empty body: thirty seconds
+            if url.path == "/api/clip":
+                payload = {}
+            else:
+                self._json({"error": str(exc)}, 400)
+                return
+        if url.path == "/api/clip":
+            LAST_REQUEST = time.time()
+            try:
+                result = clips.make_clip(self.cfg, payload.get("seconds", 30))
+            except (ValueError, TypeError) as exc:
+                self._json({"error": str(exc)}, 409)
+                return
+            self._json({"ok": True, **result})
             return
         try:
             result = self.runtime.change(payload)
@@ -1200,7 +1214,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             if self.gaze_rec is not None:
                 gaze["csv"] = self.gaze_rec.info()
             self._json({"fps": round(fps, 1), "gaze": gaze, "record": self._record_status(),
-                        "picture": self._picture_state(), **self.enc.status()}, head=head)
+                        "clip_window": self.cfg.clip_window, "picture": self._picture_state(),
+                        **self.enc.status()}, head=head)
             return
         if path == "/gaze":
             self._gaze_json(head)
@@ -1233,6 +1248,18 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                 self._json({"error": "no such recording"}, 404, head=head)
                 return
             self._serve_file(os.path.join(directory, name), head, "video/mp4", name)
+            return
+        if path == "/clips":
+            self._json({"files": clips.clip_files(clips.clips_dir(self.cfg.hls_dir)),
+                        "window": self.cfg.clip_window}, head=head)
+            return
+        if path.startswith("/clips/"):
+            name = path[len("/clips/"):]
+            if ("/" in name or ".." in name or not name.startswith(clips.CLIP_PREFIX)
+                    or not name.endswith(".mp4")):
+                self._json({"error": "no such clip"}, 404, head=head)
+                return
+            self._serve_file(os.path.join(clips.clips_dir(self.cfg.hls_dir), name), head, "video/mp4", name)
             return
         if path in ("/", "/index.html"):
             self._page(head)
@@ -1543,6 +1570,8 @@ def build_config(argv=None) -> Config:
     ap.add_argument("--hls-dir", default=_env("HLS", "/tmp/streamframe-hls"))
     ap.add_argument("--hls-time", type=int, default=2)
     ap.add_argument("--hls-window", type=int, default=8)
+    ap.add_argument("--clip-window", type=float, default=float(_env("CLIP_WINDOW", 90) or 90),
+                    help="seconds of recent stream kept aside for /api/clip; 0 turns it off")
     ap.add_argument("--idle", type=float, default=float(_env("IDLE", 120)))
     ap.add_argument("--audio", default=_env("AUDIO", ""),
                     help='system audio to mux in: "auto" (default sink monitor) or a pulse source name')
@@ -1619,12 +1648,20 @@ def main(argv=None) -> int:
 
     threading.Thread(target=watchdog, args=(cfg, enc, ring), daemon=True).start()
 
+    # the last --clip-window seconds stay on disk: a clip is a concat of links, never a re-encode
+    shutil.rmtree(clips.recent_dir(cfg.hls_dir), ignore_errors=True)
+    keeper = clips.Keeper(cfg.hls_dir, cfg.clip_window, cfg.hls_time) if cfg.clip_window > 0 else None
+    if keeper:
+        keeper.start()
+
     stopping = threading.Event()
 
     def _bye(*_):
         if stopping.is_set():
             return
         stopping.set()
+        if keeper:
+            keeper.stop()
         enc.shutdown()
         runtime.shutdown()
         # shutdown() waits for serve_forever() to return: calling it from this thread deadlocks

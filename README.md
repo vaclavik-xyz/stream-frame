@@ -69,13 +69,16 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
   its station link; the player reads it and hands a phone two codes — one to join, one to open the
   stream — so the picture goes headset → phone with no router in between. See
   [docs/hotspot.md](docs/hotspot.md).
+- **Grab the last thirty seconds after the fact.** The segments are already on disk; the scissors button
+  (or `k`) concats them with `-c copy` into an MP4 you can save — no re-encode, no second encoder. See
+  [docs/clip.md](docs/clip.md).
 - **It looks like a device.** A quiet chip row (transport, rate, how far behind the picture is, a `rec`
   timer), a vignette and a wordmark — fading out when you are watching, back when you move.
 - **Leaves the CPU to the game.** ffmpeg runs at `nice 10` (`--nice`), can be capped with `--threads`, and
   if the compositor is producing full-rate frames while the encoder cannot keep up, the daemon lowers the
   bitrate once or twice instead of stuttering forever (`--adapt`, ring mode only).
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
-- **Tests without hardware.** 110 unit tests for the ring parser, eye-record parser, command builder,
+- **Tests without hardware.** 127 unit tests for the ring parser, eye-record parser, command builder,
   segment numbering, HTTP routes, Range requests, event streaming, settings validation and rollback, and
   shutdown behaviour — `pytest` runs with no GPU, no headset and no ffmpeg.
 
@@ -133,6 +136,8 @@ locally: poking the panel in dev cannot restart the stream someone is watching.
 | `/gaze.csv` | download the gaze recording so far (needs `--gaze-csv`) |
 | `/recordings` | JSON list of the MP4 chunks with sizes and URLs (needs `--record`) |
 | `/api/settings` | `GET` current values + ranges, `POST` a change (token) |
+| `/api/clip` | `POST {"seconds": 30}` cuts the last N seconds out of the stream into an MP4 (token) |
+| `/clips`, `/clips/<name>` | the clips on the shelf, newest first, and one of them with `Range` support |
 | `/api/hotspot` | the headset's own hotspot: SSID, passphrase, live address, URL, band, clients (token) |
 | `/qr.js` | the QR encoder the page draws the joining codes with (public, vendored) |
 | `/recordings/<name>` | download or stream one chunk, `Range` supported; the newest one is `"open": true` until the encoder closes it |

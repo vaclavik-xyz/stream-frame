@@ -42,7 +42,7 @@ test:
 
 lint:
 	$(PY) -m ruff check server tests || true
-	$(PY) -m py_compile server/streamframe.py server/settings.py server/gaze.py server/hotspot.py
+	$(PY) -m py_compile server/streamframe.py server/settings.py server/gaze.py server/hotspot.py server/clip.py
 
 # ---------------------------------------------------------------- install
 install: install-layer install-units
@@ -60,6 +60,7 @@ install-units:
 	install -m 644 server/settings.py $(PREFIX)/server/settings.py
 	install -m 644 server/gaze.py $(PREFIX)/server/gaze.py
 	install -m 644 server/hotspot.py $(PREFIX)/server/hotspot.py
+	install -m 644 server/clip.py $(PREFIX)/server/clip.py
 	install -m 644 server/vrstreamd.py $(PREFIX)/server/vrstreamd.py   # alias for existing units
 	install -m 644 server/web/index.html $(PREFIX)/server/web/index.html
 	install -m 644 server/web/qr.js $(PREFIX)/server/web/qr.js

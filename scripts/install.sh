@@ -53,6 +53,7 @@ run install -m 755 "$REPO/server/streamframe.py"  "$PREFIX/server/streamframe.py
 run install -m 644 "$REPO/server/settings.py"     "$PREFIX/server/settings.py"
 run install -m 644 "$REPO/server/gaze.py"         "$PREFIX/server/gaze.py"
 run install -m 644 "$REPO/server/hotspot.py"      "$PREFIX/server/hotspot.py"
+run install -m 644 "$REPO/server/clip.py"         "$PREFIX/server/clip.py"
 run install -m 644 "$REPO/server/vrstreamd.py"    "$PREFIX/server/vrstreamd.py"
 run install -m 644 "$REPO/server/web/index.html"  "$PREFIX/server/web/index.html"
 run install -m 644 "$REPO/server/web/qr.js"       "$PREFIX/server/web/qr.js"

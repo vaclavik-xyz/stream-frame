@@ -905,3 +905,83 @@ def test_the_daemon_writes_stream_frame_names():
     assert cfg.hls_dir == "/tmp/streamframe-hls"
     assert vs.Config(record="auto").record_dir().endswith("/streamframe-recordings")
     assert vs.BEACON_LOG == "/tmp/streamframe-client.log"
+
+
+def post_json(url, payload=None, timeout=5):
+    data = json.dumps(payload if payload is not None else {}).encode()
+    req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"},
+                                method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read(), dict(r.headers)
+    except urllib.error.HTTPError as e:
+        return e.code, e.read(), dict(e.headers)
+
+
+def test_clip_route_needs_the_token(server, monkeypatch):
+    base, cfg, _ = server
+    monkeypatch.setattr(vs.clips, "make_clip", lambda cfg_, seconds: {"name": "clip-x.mp4",
+                                                                     "url": "/clips/clip-x.mp4"})
+    cfg.token = "s3cret"
+    assert post_json(base + "/api/clip")[0] == 401
+    assert post_json(base + "/api/clip?token=s3cret")[0] == 200
+
+
+def test_clip_route_takes_an_empty_body_as_thirty_seconds(server, monkeypatch):
+    base, cfg, _ = server
+    seen = {}
+
+    def fake(cfg_, seconds):
+        seen["seconds"] = seconds
+        return {"name": "clip-y.mp4", "url": "/clips/clip-y.mp4", "seconds": 30.0}
+
+    monkeypatch.setattr(vs.clips, "make_clip", fake)
+    code, body, _ = post_json(base + "/api/clip")
+    payload = json.loads(body)
+    assert code == 200 and payload["ok"] is True and payload["url"] == "/clips/clip-y.mp4"
+    assert seen["seconds"] == 30
+
+
+def test_clip_route_passes_the_asked_length(server, monkeypatch):
+    base, cfg, _ = server
+    seen = {}
+    monkeypatch.setattr(vs.clips, "make_clip", lambda cfg_, seconds: seen.update(seconds=seconds) or {"name": "c"})
+    assert post_json(base + "/api/clip", {"seconds": 12})[0] == 200
+    assert seen["seconds"] == 12
+
+
+def test_clip_route_says_so_when_there_is_nothing_to_cut(server, monkeypatch):
+    base, cfg, _ = server
+
+    def refuse(cfg_, seconds):
+        raise ValueError("nothing to clip yet — the stream has not written a segment")
+
+    monkeypatch.setattr(vs.clips, "make_clip", refuse)
+    code, body, _ = post_json(base + "/api/clip")
+    assert code == 409 and "nothing to clip" in json.loads(body)["error"]
+
+
+def test_clip_download_is_served_as_an_attachment(server):
+    base, cfg, _ = server
+    directory = Path(cfg.hls_dir) / "clips"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "clip-20260101-120000.mp4").write_bytes(b"\0" * 64)
+    code, body, headers = get(base + "/clips/clip-20260101-120000.mp4")
+    assert code == 200 and len(body) == 64
+    assert "attachment" in headers.get("Content-Disposition", "")
+
+
+def test_clip_download_refuses_a_traversal(server):
+    base, _, _ = server
+    assert get(base + "/clips/..%2Fsecret.mp4")[0] == 404
+    assert get(base + "/clips/live1.ts")[0] == 404          # only our own clips
+
+
+def test_clip_listing_shows_the_newest_first(server):
+    base, cfg, _ = server
+    directory = Path(cfg.hls_dir) / "clips"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "clip-20260101-120000.mp4").write_bytes(b"\0")
+    payload = json.loads(get(base + "/clips")[1])
+    assert payload["files"][0]["name"] == "clip-20260101-120000.mp4"
+    assert payload["window"] == 90.0

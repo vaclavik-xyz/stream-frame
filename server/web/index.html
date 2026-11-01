@@ -100,6 +100,19 @@
   #stale.on { display:flex; }
   #stale .ico { width:15px; height:15px; color:var(--warn); }
 
+  /* a clip takes a second or two; the toast is the only place that says so */
+  #toast { position:fixed; left:50%; bottom:calc(16px + env(safe-area-inset-bottom));
+    transform:translateX(-50%); display:none; align-items:center; gap:8px; padding:8px 14px;
+    border-radius:999px; background:var(--glass); border:1px solid var(--stroke); color:#e8ebf0;
+    font:500 12.5px/1 -apple-system,BlinkMacSystemFont,sans-serif; box-shadow:var(--shadow);
+    backdrop-filter:blur(10px); z-index:8; pointer-events:none; max-width:88vw; }
+  #toast.on { display:flex; }
+  #toast .ico { width:15px; height:15px; color:var(--accent); }
+  #toast.link { pointer-events:auto; }
+  #toast-link { color:var(--accent); margin-left:6px; text-decoration:underline; font-weight:600; }
+  #bar button.off { opacity:.3; pointer-events:none; }
+  #bar button.busy { opacity:.5; }
+
   #gazebadge { position:fixed; left:14px; bottom:calc(12px + env(safe-area-inset-bottom));
     font:11px/1 ui-monospace,Menlo,monospace; font-variant-numeric:tabular-nums; color:var(--dim);
     padding:6px 10px; border-radius:999px; background:var(--glass); border:1px solid var(--stroke);
@@ -224,6 +237,7 @@
   <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M4 7h9M18 7h2M4 12h3M12 12h8M4 17h9M18 17h2"/><circle cx="15.5" cy="7" r="2"/><circle cx="9.5" cy="12" r="2"/><circle cx="15.5" cy="17" r="2"/></symbol>
   <symbol id="i-expand" viewBox="0 0 24 24"><path d="M9 4H5.6A1.6 1.6 0 0 0 4 5.6V9M15 4h3.4A1.6 1.6 0 0 1 20 5.6V9M20 15v3.4a1.6 1.6 0 0 1-1.6 1.6H15M4 15v3.4A1.6 1.6 0 0 0 5.6 20H9"/></symbol>
   <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+  <symbol id="i-scissors" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.6"/><circle cx="6" cy="18" r="2.6"/><path d="M8.2 7.6 19 18M8.2 16.4 19 6"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 3.4 2.9 19.3h18.2L12 3.4z"/><path d="M12 9.2v4.4M12 16.9h.01"/></symbol>
 </svg>
 
@@ -231,6 +245,7 @@
 <canvas id="gaze"></canvas>
 <div id="gazebadge"></div>
 <div id="stale"><svg class="ico"><use href="#i-alert"/></svg><span id="stale-text"></span></div>
+<div id="toast" role="status" aria-live="polite"><svg class="ico"><use href="#i-scissors"/></svg><span id="toast-text"></span><a id="toast-link" hidden>save</a></div>
 <div id="msg">connecting…</div>
 <div id="hud"></div>
 <div id="film"></div>
@@ -249,6 +264,7 @@
   <button id="gazebtn" title="eye tracking reticle (g)" aria-label="eye tracking"><svg class="ico"><use href="#i-eye"/></svg></button>
   <button id="settings" title="settings (s)" aria-label="settings"><svg class="ico"><use href="#i-sliders"/></svg></button>
   <button id="fs" title="fullscreen (f)" aria-label="fullscreen"><svg class="ico"><use href="#i-expand"/></svg></button>
+  <button id="clip" title="clip the last 30 s (k)" aria-label="clip the last 30 seconds"><svg class="ico"><use href="#i-scissors"/></svg></button>
   <button id="hide" title="hide everything (c)" aria-label="hide overlays"><svg class="ico"><use href="#i-eye-off"/></svg></button>
 </div>
 <button id="reveal" title="show overlays (c)" aria-label="show overlays"><svg class="ico"><use href="#i-eye"/></svg></button>
@@ -443,6 +459,42 @@
     }).catch(() => {});
   }, 3000);
 
+  const toastEl = document.getElementById("toast");
+  const toastText = document.getElementById("toast-text");
+  let toastTimer = null;
+  function toast(text, href) {
+    if (toastText.textContent !== text) toastText.textContent = text;
+    const link = document.getElementById("toast-link");
+    // a popup opened after an await gets blocked, so the clip is offered as a link to tap instead
+    if (href) { link.href = href; link.hidden = false; } else { link.hidden = true; link.removeAttribute("href"); }
+    toastEl.classList.toggle("link", !!href);
+    toastEl.classList.add("on");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toastEl.classList.remove("on"), href ? 12000 : 4000);
+  }
+
+  // the segments behind a clip already exist: this asks the daemon to concat them, nothing re-encodes
+  async function clipNow() {
+    const btn = document.getElementById("clip");
+    if (btn.classList.contains("busy")) return;
+    btn.classList.add("busy");
+    toast("cutting the last 30 s…");
+    try {
+      const res = await fetch(qs("api/clip"), {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ seconds: 30 }),
+      });
+      const data = await res.json();
+      if (!res.ok) { toast(data.error || "no clip"); return; }
+      toast("clip ready — " + data.seconds + " s, " + (data.bytes / 1048576).toFixed(1) + " MB",
+            qs(data.url));
+    } catch (err) {
+      toast("clip failed: " + (err && err.message ? err.message : err));
+    } finally {
+      btn.classList.remove("busy");
+    }
+  }
+
   const staleEl = document.getElementById("stale");
   const staleText = document.getElementById("stale-text");
   function showStale(text) {
@@ -567,6 +619,7 @@
   if (gazeOn) gazeSet(true);
 
   document.getElementById("stats").onclick = () => { hud.classList.toggle("on"); renderHud(); };
+  document.getElementById("clip").onclick = clipNow;
 
   // ---------------------------------------------------------------- hide the chrome
   // A headset view is for watching, not for reading. `c` (or the eye button) drops everything the
@@ -617,6 +670,7 @@
       (pic.age < 1 ? "in sync" : pic.age.toFixed(0) + " s behind");
     chipAge.classList.toggle("ok", pic.age != null && pic.age < 1);
     chipAge.classList.toggle("late", pic.age != null && pic.age >= 3);
+    document.getElementById("clip").classList.toggle("off", status.clip_window === 0);
     const rec = status.record || {};
     const on = !!(rec.enabled && status.encoder);
     chipRec.classList.toggle("off", !on);
@@ -935,6 +989,7 @@
     if (e.key === "c") setChromeHidden(!chromeHidden);
     if (e.key === "g") gazeSet(!gazeOn);
     if (e.key === "s") document.getElementById("settings").click();
+    if (e.key === "k") clipNow();
     if (e.key === "Escape") {
       // the card sits on top of the panel: escape peels one layer at a time
       if (document.getElementById("qrbox").classList.contains("on")) closeShare();
