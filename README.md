@@ -245,11 +245,15 @@ keyboard — the same things are reachable:
 | --- | --- | --- |
 | walk the toolbar | d-pad ← → | ← → |
 | press the highlighted button | A | Enter |
-| step back / close | B | Esc |
+| step back / close | View or LB (**not** B) | Esc |
 | volume | d-pad ↑ ↓ | ↑ ↓ |
 | clip the last 30 s | X | k |
 | settings | Y | s |
 | sound, stats, fullscreen, hide | A on the highlighted button | a, t, f, c |
+
+B is deliberately left alone: in the overlay browser it is Steam's own *back* and it shuts the
+page. With the settings panel open the same d-pad walks its sliders and dropdowns instead of the
+toolbar, so the panel is usable without a mouse too.
 
 A container pad shows up twice — once itself, once as a virtual pad Steam Input mirrors it into — so
 presses are latched by action and released before they fire again. The poll runs on a message-channel

@@ -16,6 +16,8 @@ All notable changes to this project are documented here. The format follows
   A presses, B steps back, up/down is volume, X clips. The 8BitDo Pro 2 on the Deck is seen twice
   (itself and Steam's virtual pad), so presses are latched per action, and the poll runs on a
   message-channel pump because a throttled overlay tab loses quick taps between timer ticks.
+- B is not bound on purpose — in Steam's overlay browser it closes the page — so stepping back sits
+  on View / LB, and the d-pad walks the settings panel's fields while that panel is open.
 - `deck-stream.sh start` now follows the session it is in: in Game Mode it opens the player page in
   Steam's own overlay browser (`steam://openurl/…`, HLS, no session switch), on the desktop it plays
   RTSP in mpv. `--browser` / `--mpv` force either route, and `status` reports which one is live by

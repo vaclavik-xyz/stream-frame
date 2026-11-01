@@ -117,6 +117,7 @@
   /* the pad walks this selection: a ring big enough to see from a sofa */
   #bar button.padsel { outline:2px solid var(--accent); outline-offset:2px;
     background:var(--accent-soft); color:#fff; }
+  #panel .padsel { outline:2px solid var(--accent); outline-offset:3px; border-radius:8px; }
   #bar button.busy { opacity:.5; }
   #bar button.muted { opacity:.45; }
 
@@ -1020,15 +1021,27 @@
   const padSeen = new Set();
   const latched = {};
   const padLast = {};
-  const padName = {0: "A", 1: "B", 2: "X", 3: "Y", 12: "up", 13: "down", 14: "left", 15: "right"};
+  // B is Steam's own "back": in the overlay browser it closes the page, so it is not ours to
+  // take. Back/step-out lives on View (8) and the left shoulder (4) instead.
+  const padName = {0: "A", 2: "X", 3: "Y", 4: "back", 8: "back",
+                   12: "up", 13: "down", 14: "left", 15: "right"};
   let padSel = -1;
 
+  // While the settings panel is open the same d-pad walks its fields instead of the toolbar:
+  // a panel you can open with Y but cannot touch is worse than no shortcut at all.
   const barButtons = () => Array.from(document.querySelectorAll("#bar button"));
+  const padList = () => panel.classList.contains("on")
+    ? Array.from(document.querySelectorAll(
+        "#panel-body input, #panel-body select, #panel-body button, #panel-apply, #panel-close"))
+        .filter((el) => !el.disabled && el.offsetParent !== null)
+    : barButtons();
   function padPaint() {
-    barButtons().forEach((b, i) => b.classList.toggle("padsel", i === padSel));
+    document.querySelectorAll(".padsel").forEach((el) => el.classList.remove("padsel"));
+    const list = padList();
+    if (list[padSel]) list[padSel].classList.add("padsel");
   }
   function padMove(step) {
-    const list = barButtons();
+    const list = padList();
     if (!list.length) return;
     setChromeHidden(false);            // a selection you cannot see is not a selection
     padSel = padSel < 0 ? (step > 0 ? 0 : list.length - 1)
@@ -1044,18 +1057,18 @@
     toast("volume " + Math.round(next * 100) + " %");
   }
   function padAct(name) {
-    const list = barButtons();
+    const list = padList();
     if (name === "left") return padMove(-1);
     if (name === "right") return padMove(1);
     if (name === "up") return nudgeVolume(+0.05);
     if (name === "down") return nudgeVolume(-0.05);
     if (name === "A") {
       const target = list[padSel];
-      if (target) { target.click(); setChromeHidden(false); }
+      if (target) { target.focus({ preventScroll: true }); target.click(); setChromeHidden(false); }
       else soundBtn.click();           // nothing selected yet: A is still "sound"
       return;
     }
-    if (name === "B") {
+    if (name === "back") {
       if (panel.classList.contains("on")) return closePanel();
       if (document.getElementById("qrbox").classList.contains("on")) return closeShare();
       padSel = -1; padPaint(); return;
