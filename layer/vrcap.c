@@ -6,11 +6,12 @@
 // still in flight on the GPU, a single frame is dropped.
 //
 // Env:
-//   VRSTREAM_CAP=1              enable capture ("1" = on, anything else = off)
-//   VRSTREAM_CAP_W=1440         target width, output height derived from aspect
-//   VRSTREAM_CAP_FPS=60         frame rate cap
-//   VRSTREAM_CAP_SHM=/vrstream_frames   shm ring name (POSIX shm_open)
-//   VRSTREAM_CAP_MAX=0          stop after N frames (0 = unlimited)
+//   STREAMFRAME_CAP=1                 enable capture ("1" = on, anything else = off)
+//   STREAMFRAME_CAP_W=1440            target width, output height derived from aspect
+//   STREAMFRAME_CAP_FPS=60            frame rate cap
+//   STREAMFRAME_CAP_SHM=/streamframe_frames   shm ring name (POSIX shm_open)
+//   STREAMFRAME_CAP_MAX=0             stop after N frames (0 = unlimited)
+// The old VRSTREAM_CAP* names are still read, so a unit written for the previous name keeps working.
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -116,8 +117,19 @@ static double now_s(void) {
     return ts.tv_sec + ts.tv_nsec / 1e9;
 }
 
+/* STREAMFRAME_CAP_<suffix> first, then the old VRSTREAM_CAP_<suffix>: the layer is loaded by the
+ * compositor at startup, so a unit that still says VRSTREAM_CAP must keep working across the rename. */
+static const char *cap_env(const char *suffix) {
+    static char buf[64];
+    snprintf(buf, sizeof buf, "STREAMFRAME_CAP_%s", suffix);
+    const char *v = getenv(buf);
+    if (v) return v;
+    snprintf(buf, sizeof buf, "VRSTREAM_CAP_%s", suffix);
+    return getenv(buf);
+}
+
 static int env_int(const char *n, int def) {
-    const char *v = getenv(n);
+    const char *v = cap_env(n);
     return v ? atoi(v) : def;
 }
 
@@ -131,8 +143,8 @@ static uint32_t mem_type_for(CapCtx *c, uint32_t bits, VkMemoryPropertyFlags wan
 }
 
 static int shm_open_ring(int w, int h) {
-    const char *name = getenv("VRSTREAM_CAP_SHM");
-    if (!name) name = "/vrstream_frames";
+    const char *name = cap_env("SHM");
+    if (!name) name = "/streamframe_frames";
     size_t pixels = (size_t)w * h * 4;
     size_t need = 64 + (size_t)SLOTS * (sizeof(uint64_t) * 2 + pixels);
     if (g_shm && g_shm_size >= need && g_shm_w == w && g_shm_h == h) return 1;
@@ -215,7 +227,7 @@ static void cap_teardown(CapCtx *c) {
 }
 
 static int cap_setup(CapCtx *c, uint32_t srcW, uint32_t srcH, VkFormat fmt) {
-    int wantW = env_int("VRSTREAM_CAP_W", 1440);
+    int wantW = env_int("W", 1440);
     if (wantW < 320) wantW = 320;
     uint32_t dstW = (uint32_t)wantW;
     uint32_t dstH = (uint32_t)((uint64_t)srcH * dstW / srcW);
@@ -442,7 +454,7 @@ VKAPI_ATTR VkResult VKAPI_CALL cap_QueuePresentKHR(VkQueue queue, const VkPresen
     if (g_enabled == 1 && locked && info && info->swapchainCount > 0) {
         cap_collect(&g_cap);
         double t = now_s();
-        int fps = env_int("VRSTREAM_CAP_FPS", 60);
+        int fps = env_int("FPS", 60);
         if (fps < 1) fps = 60;
         if (t - g_last_frame_t >= 1.0 / fps) {
             g_last_frame_t = t;
@@ -515,7 +527,7 @@ VKAPI_ATTR VkResult VKAPI_CALL cap_CreateDevice(VkPhysicalDevice gpu, const VkDe
     g_cap.dev = *dev;
     g_cap.gdpa = g_gdpa;
     g_cap.queueFamily = ci->pQueueCreateInfos ? ci->pQueueCreateInfos[0].queueFamilyIndex : 0;
-    g_cap.max_frames = env_int("VRSTREAM_CAP_MAX", 0);
+    g_cap.max_frames = env_int("MAX", 0);
     PFN_vkGetDeviceQueue pGetQueue = (PFN_vkGetDeviceQueue)g_gdpa(*dev, "vkGetDeviceQueue");
     if (pGetQueue) pGetQueue(*dev, g_cap.queueFamily, 0, &g_cap.queue);
 
@@ -577,7 +589,7 @@ VKAPI_ATTR VkResult VKAPI_CALL cap_CreateInstance(const VkInstanceCreateInfo *ci
 
 VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL cap_GetInstanceProcAddr(VkInstance instance, const char *name) {
     if (g_enabled < 0) {
-        const char *e = getenv("VRSTREAM_CAP");
+        const char *e = cap_env("");
         g_enabled = (e && e[0] == '1') ? 1 : 0;
         logmsg("=== vrcap loaded, capture=%s ===", g_enabled ? "ON" : "off");
     }

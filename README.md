@@ -71,7 +71,7 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
   if the compositor is producing full-rate frames while the encoder cannot keep up, the daemon lowers the
   bitrate once or twice instead of stuttering forever (`--adapt`, ring mode only).
 - **Token auth** for the HTTP side when the port is not private (see [docs/troubleshooting.md](docs/troubleshooting.md#turning-on-token); MediaMTX's own ports are not covered).
-- **Tests without hardware.** 93 unit tests for the ring parser, eye-record parser, command builder,
+- **Tests without hardware.** 96 unit tests for the ring parser, eye-record parser, command builder,
   segment numbering, HTTP routes, Range requests, event streaming, settings validation and rollback, and
   shutdown behaviour — `pytest` runs with no GPU, no headset and no ffmpeg.
 
@@ -93,10 +93,10 @@ SteamVR already mirrors (which is what you want on a TV anyway). Test it first w
 ## Quick start
 
 ```bash
-git clone https://github.com/<you>/vrstream && cd vrstream
+git clone https://github.com/<you>/stream-frame && cd stream-frame
 ./scripts/install.sh          # --dry-run first if you like
 systemctl --user restart steamvr.service     # layer is picked up at compositor start
-systemctl --user start vrstream.service mediamtx.service
+systemctl --user start streamframe.service mediamtx.service
 ./scripts/smoke-test.sh <host-or-ip> 8101
 ```
 
@@ -123,7 +123,7 @@ Details, manual install, environment variables: [docs/install.md](docs/install.m
 | `/recordings` | JSON list of the MP4 chunks with sizes and URLs (needs `--record`) |
 | `/api/settings` | `GET` current values + ranges, `POST` a change (token) |
 | `/recordings/<name>` | download or stream one chunk, `Range` supported; the newest one is `"open": true` until the encoder closes it |
-| `/log?e=…` | player telemetry, appended to `/tmp/vrstreamd-client.log` |
+| `/log?e=…` | player telemetry, appended to `/tmp/streamframe-client.log` |
 
 ```bash
 curl -s http://<host>:8101/status | python3 -m json.tool

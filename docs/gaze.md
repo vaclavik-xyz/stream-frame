@@ -1,7 +1,7 @@
 # Gaze: where the wearer is looking, next to the picture
 
 The Frame tracks the eyes for foveated rendering. The runtime keeps each new estimate in a small
-shared-memory record, and that record is readable from a normal process. vrstream reads it, puts it on
+shared-memory record, and that record is readable from a normal process. Stream Frame reads it, puts it on
 a clock shared with the video, and lets the player draw a reticle on top of the stream.
 
 Nothing is written to the headset, no driver is patched, and no image of the eye leaves the device —
@@ -118,7 +118,7 @@ Then the daemon:
 
 ```bash
 ls -l /dev/shm/eye-server.mmap          # exists while the runtime is up
-systemctl --user status vrstream         # look for "gaze: reading … (abi 4)"
+systemctl --user status streamframe     # look for "gaze: reading … (abi 4)"
 curl -s localhost:8101/gaze | jq         # yaw/pitch should change when you look around
 ```
 

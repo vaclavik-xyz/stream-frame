@@ -9,7 +9,7 @@ SteamVR is not running. The layer only mirrors frames that are being presented; 
 capture on an idle compositor.
 
 If `fps` is healthy but `encoder` is `false`, read `last_error` in the same JSON and the tail of
-`/tmp/vrstreamd-ffmpeg.log`.
+`/tmp/streamframe-ffmpeg.log`.
 
 ## Works in VLC, refuses to play in Safari / iOS
 
@@ -43,7 +43,7 @@ Four causes, in the order they were ruled out:
 
 The player page also self-heals: it watches `currentTime`, and if the clock stops advancing for 5 s
 while playback is not paused it re-attaches with backoff, plus beacons `error/stalled/waiting/frozen`
-to `/log?e=…` (`/tmp/vrstreamd-client.log` on the server). That is how the freezes above were counted
+to `/log?e=…` (`/tmp/streamframe-client.log` on the server). That is how the freezes above were counted
 without a screen recording.
 
 ## Stream dies a couple of minutes after a player connects over RTSP
@@ -55,13 +55,13 @@ and kills the encoder mid-view.
 
 The other half of this bug is on the MediaMTX side: `runOnDemandCloseAfter` drops the publisher when the
 last reader leaves, and a tee slave that lost its publisher is closed **permanently** (`onfail=ignore`
-keeps HLS alive but never reconnects). Keep `runOnDemandCloseAfter: 0s` and let vrstreamd decide when to
+keeps HLS alive but never reconnects). Keep `runOnDemandCloseAfter: 0s` and let the daemon decide when to
 stop; the watchdog additionally notices a `ready: false` path and re-runs the encoder.
 
 ## The picture freezes after SteamVR restarts, `fps: 0`, encoder still running
 
 The compositor calls `shm_unlink()` and recreates the ring on every start, so the daemon's mapping
-points at a dead inode while `/dev/shm/vrstream_frames` looks perfectly fine. The daemon stats the path
+points at a dead inode while `/dev/shm/streamframe_frames` looks perfectly fine. The daemon stats the path
 every 2 s and reopens the ring when the inode changes; if you fork this, never rely on the path alone.
 
 ## `systemctl stop` hangs for 90 s and then SIGKILLs
@@ -103,7 +103,7 @@ while RTSP stays empty, which makes it look like a MediaMTX problem.
 Check that the segments really carry audio before blaming the player:
 
 ```bash
-ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 /tmp/vrstream-hls/live5.ts
+ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 /tmp/streamframe-hls/live5.ts
 ```
 
 ## `--source v4l2:/dev/video99` sees nothing
@@ -147,7 +147,7 @@ and labelled `source: "segment"`.
 `/status` → `record.enabled` false means `--record` was not passed. If it is true but `record.files` stays
 at 0, nothing is being encoded (`encoder: false`) — the daemon only encodes on demand, so open the page or
 `curl /wake`. A folder that is not writable only loses the recording: the `segment` branch is
-`onfail=ignore`, the live stream continues, and the reason is in `/tmp/vrstreamd-ffmpeg.log`.
+`onfail=ignore`, the live stream continues, and the reason is in `/tmp/streamframe-ffmpeg.log`.
 
 ## The gaze reticle never appears
 
@@ -188,14 +188,14 @@ bind MediaMTX to loopback and front it with a proxy, or configure `authInternalU
 * the manifest must live in a loader-searched directory
   (`~/.local/share/vulkan/implicit_layer.d/` is the per-user one) and its `library_path` must point to
   the `.so` — a relative path resolves against the manifest directory;
-* the process must have `VRSTREAM_CAP=1` in its environment (implicit layers are gated by
+* the process must have `STREAMFRAME_CAP=1` in its environment (implicit layers are gated by
   `enable_environment`) — set it in the `steamvr.service` drop-in, then restart SteamVR;
 * the architecture must match the compositor's: an aarch64 `.so` in a 64-bit x86 process is ignored.
 
 Confirm the file is being written at all:
 
 ```bash
-ls -l /dev/shm/vrstream_frames    # size = 64 + 3*(16 + w*h*4)
+ls -l /dev/shm/streamframe_frames    # size = 64 + 3*(16 + w*h*4)
 ```
 
 If it is missing, the layer never ran in the process that presents — the compositor was usually started
@@ -207,10 +207,23 @@ The swapchain format is not BGRA. The layer blits whatever the compositor presen
 image; if the driver hands back a different format the bytes are misinterpreted. Also try adding
 `DISABLE_GAMESCOPE_WSI=1` to the compositor's drop-in when gamescope wraps presentation.
 
+## Upgraded from the old name and the picture never appears
+
+The daemon now defaults to `/dev/shm/streamframe_frames`, while an older copy of the layer — the one the
+compositor loaded at its last start — still writes `/vrstream_frames`. The two must agree on the name:
+
+```bash
+ls -l /dev/shm/ | grep -i frames     # what the layer is actually writing
+```
+
+Either restart SteamVR with the current layer installed, or point the daemon at the old name with
+`--shm /dev/shm/vrstream_frames`. The env vars follow the same rule: `STREAMFRAME_CAP*` wins,
+`VRSTREAM_CAP*` still works.
+
 ## Encoder pegs the CPU
 
 The fish-eye unwarp (`v360`) is the expensive part: ~1.3 of 4 cores at 1280×720@60 on the Frame. Drop to
-`--layout mono-round` (no unwarp), or lower `--bitrate`, or capture at `VRSTREAM_CAP_W=1024`. The stereo
+`--layout mono-round` (no unwarp), or lower `--bitrate`, or capture at `STREAMFRAME_CAP_W=1024`. The stereo
 layout is the cheapest and the ugliest on a TV.
 
 ## Startup hangs ~35 s on a Mac (dev only)

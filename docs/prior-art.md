@@ -4,7 +4,7 @@ Checked 2026-11-01. Star counts and licence come from the GitHub API on that dat
 projects' own READMEs or docs. Anything I could not confirm from a first-party source is marked
 *unverified*.
 
-vrstream is not the first attempt at "see what the headset sees", so this page exists to keep the
+Stream Frame is not the first attempt at "see what the headset sees", so this page exists to keep the
 positioning honest: what others do better, what nobody does, and what is worth copying.
 
 ## Tools that show or record the headset view
@@ -55,7 +55,7 @@ that VLC, mpv, a TV, or a browser tab can open.
 
 These are **interactive** streaming stacks: a headset client decodes into the display pipeline, frames
 are timed to the panel, and the transport is tuned for tens of milliseconds. That is the opposite trade
-from vrstream: any player, no client, seconds of buffer allowed, and a picture you can send to a TV.
+from Stream Frame: any player, no client, seconds of buffer allowed, and a picture you can send to a TV.
 
 ## Transport
 
@@ -65,7 +65,7 @@ from vrstream: any player, no client, seconds of buffer allowed, and a picture y
   Assistant.
 - The constraint that decides the audio story everywhere: browsers require Opus in WebRTC and do not
   accept AAC, so a browser WHEP player is silent unless a second, Opus-encoded audio track is added.
-  HLS and RTSP carry AAC fine — which is exactly why vrstream's sound works in VLC/mpv/HLS and not in
+  HLS and RTSP carry AAC fine — which is exactly why Stream Frame's sound works in VLC/mpv/HLS and not in
   the WebRTC page.
 
 ## Eye tracking on the Frame
@@ -86,7 +86,7 @@ from vrstream: any player, no client, seconds of buffer allowed, and a picture y
   publishes gaze and openness, not pixels. Raw eye images are biometric data under GDPR Art. 9, which is
   a good part of why vendors gate them.
 
-## Where vrstream sits
+## Where Stream Frame sits
 
 - **Not** an interactive VR streaming stack like ALVR/WiVRn: RTSP/WebRTC lands at roughly 0.3–0.8 s here,
   an order of magnitude above a panel-synchronised client. It is for watching, recording and sharing,
@@ -100,11 +100,11 @@ from vrstream: any player, no client, seconds of buffer allowed, and a picture y
 ## What is worth copying
 
 1. **Discovery.** Frame Control finds a headset at `frame.local` and explains each connection step when
-   it fails. vrstream still expects an IP on the command line.
+   it fails. Stream Frame still expects an IP on the command line.
 2. **A gaze sidecar.** Reading `/dev/shm/eye-server.mmap` (the frameeyeosc approach) and publishing gaze
    with a timestamp next to the video would let a player draw a reticle, and would be the first
    open implementation that keeps gaze and picture in one timeline.
 3. **A Flatpak.** Stream Frame ships as a Flatpak installed from Discover on the headset; the daemon is
    pure Python and would package easily.
-4. **Recording.** Both apps record; vrstream only streams. A `-f segment` branch into an MP4 ring would
+4. **Recording.** Both apps record; Stream Frame only streams. A `-f segment` branch into an MP4 ring would
    cost one more tee slave.

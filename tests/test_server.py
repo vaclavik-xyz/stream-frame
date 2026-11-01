@@ -1,4 +1,4 @@
-"""Unit tests for vrstreamd — no GPU, no ffmpeg, no shared memory required."""
+"""Unit tests for the daemon — no GPU, no ffmpeg, no shared memory required."""
 import json
 import os
 import signal
@@ -17,7 +17,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
-import vrstreamd as vs  # noqa: E402
+import streamframe as vs  # noqa: E402
 
 # --------------------------------------------------------------- helpers
 
@@ -303,7 +303,7 @@ def test_page_gets_substitutions(server):
     cfg.token = ""
     code, body, _ = get(base + "/")
     html = body.decode()
-    assert code == 200 and "vrstream" in html
+    assert code == 200 and "Stream Frame" in html
     assert "__TOKEN__" not in html and "__WEBRTC__" not in html   # placeholders replaced
 
 
@@ -337,7 +337,7 @@ def test_wake_works_without_token(server):
 
 def test_beacon_writes_log_and_strips_newlines(server):
     base, _, _ = server
-    log = Path("/tmp/vrstreamd-client.log")
+    log = Path("/tmp/streamframe-client.log")
     before = log.read_text().count("\n") if log.exists() else 0
     code, _, _ = get(base + "/log?e=stalled%0Aforged%20line")
     assert code == 204
@@ -377,7 +377,7 @@ def test_segment_content_type(tmp_path):
 def test_sigterm_exits_promptly(tmp_path):
     """systemctl stop must not hang: shutdown() is invoked off the serve_forever thread."""
     proc = subprocess.Popen(
-        [sys.executable, str(ROOT / "server" / "vrstreamd.py"),
+        [sys.executable, str(ROOT / "server" / "streamframe.py"),
          "--port", "0", "--bind", "127.0.0.1", "--hls-dir", str(tmp_path / "hls"),
          "--rtsp-url", "", "--shm", str(tmp_path / "none.bin")],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -575,7 +575,7 @@ def test_non_ascii_token_is_a_401_not_a_dropped_connection(server):
 def test_log_beacon_needs_the_token(server, monkeypatch):
     base, cfg, _ = server
     cfg.token = "s3cret"
-    monkeypatch.setattr(vs, "BEACON_LOG", "/tmp/vrstreamd-test-beacon.log", raising=False)
+    monkeypatch.setattr(vs, "BEACON_LOG", "/tmp/streamframe-test-beacon.log", raising=False)
     try:
         assert get(base + "/log?e=hello")[0] == 401
         assert get(base + "/log?token=s3cret&e=hello")[0] == 204
@@ -654,7 +654,7 @@ def test_build_cmd_without_record_has_no_mp4_slave():
 def test_record_dir_understands_off_auto_and_paths(tmp_path):
     assert vs.Config(record="").record_dir() is None
     assert vs.Config(record="off").record_dir() is None
-    assert vs.Config(record="auto").record_dir().endswith("vrstream-recordings")
+    assert vs.Config(record="auto").record_dir().endswith("streamframe-recordings")
     assert vs.Config(record=str(tmp_path)).record_dir() == str(tmp_path)
 
 
@@ -847,3 +847,26 @@ def test_a_live_setting_is_applied_without_restarting_the_encoder(server):
     assert code == 200 and body["ok"] is True
     assert body["restarted"] is False
     assert cfg.gaze == "off"
+
+
+# --------------------------------------------------------------- the rename left nothing behind
+
+
+def test_the_old_module_name_is_the_same_module():
+    import vrstreamd as old
+
+    assert old is vs
+
+
+def test_new_env_names_win_and_old_ones_still_work(monkeypatch):
+    monkeypatch.setenv("VRSTREAM_PORT", "9101")
+    assert vs._env("PORT", 8101) == "9101"
+    monkeypatch.setenv("STREAMFRAME_PORT", "9202")
+    assert vs._env("PORT", 8101) == "9202"
+
+
+def test_the_daemon_writes_stream_frame_names():
+    cfg = vs.Config(port=8101)
+    assert cfg.hls_dir == "/tmp/streamframe-hls"
+    assert vs.Config(record="auto").record_dir().endswith("/streamframe-recordings")
+    assert vs.BEACON_LOG == "/tmp/streamframe-client.log"

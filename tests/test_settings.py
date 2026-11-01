@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "server"))
 
 import settings as prefs  # noqa: E402
-import vrstreamd as vs  # noqa: E402
+import streamframe as vs  # noqa: E402
 
 # --------------------------------------------------------------- validation
 

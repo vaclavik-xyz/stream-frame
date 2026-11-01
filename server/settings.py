@@ -23,9 +23,9 @@ import tempfile
 
 
 def _core():
-    """Import the daemon lazily: vrstreamd imports this module, and a cycle helps nobody."""
-    import vrstreamd
-    return vrstreamd
+    """Import the daemon lazily: streamframe imports this module, and a cycle helps nobody."""
+    import streamframe
+    return streamframe
 
 
 def fmt_size(n: int) -> str:

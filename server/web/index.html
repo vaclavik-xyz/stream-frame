@@ -340,7 +340,7 @@
   const gbadge = document.getElementById("gazebadge");
   const gbtn = document.getElementById("gazebtn");
   let es = null, gazeTimer = null, sample = null, trail = [];
-  let gazeOn = localStorage.getItem("vrstream.gaze") === "1";
+  let gazeOn = (localStorage.getItem("streamframe.gaze") ?? localStorage.getItem("vrstream.gaze")) === "1";
 
   function sizeCanvas() {
     const dpr = window.devicePixelRatio || 1;
@@ -403,7 +403,7 @@
 
   function gazeSet(on) {
     gazeOn = on;
-    localStorage.setItem("vrstream.gaze", on ? "1" : "0");
+    localStorage.setItem("streamframe.gaze", on ? "1" : "0");
     gbtn.classList.toggle("on", on);
     // a plain interval, not requestAnimationFrame: rAF is throttled to zero in a background tab,
     // which is exactly where a stream like this often runs

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""vrstreamd - live view of a VR compositor over HTTP.
+"""streamframe - live view of a VR compositor over HTTP.
 
 Pipeline
     vrcompositor --(vrcap Vulkan layer)--> /dev/shm ring --> ffmpeg --+--> HLS (portable, ~6 s)
@@ -55,7 +55,7 @@ RTSP_PATH = "vr"
 
 # layout presets: what the compositor presents -> what a TV wants to see
 BEACON_MAX_BYTES = 1 << 20        # rotate the client telemetry log at 1 MiB
-BEACON_LOG = "/tmp/vrstreamd-client.log"
+BEACON_LOG = "/tmp/streamframe-client.log"
 LAYOUTS = {
     # two lens-warped eyes side by side, untouched
     "stereo": None,
@@ -146,6 +146,15 @@ def prune_recordings(directory: str, limit: int) -> int:
     return removed
 
 
+def _env(name: str, default=None):
+    """STREAMFRAME_* is the name now; VRSTREAM_* is still read so units written for the old name boot."""
+    for prefix in ("STREAMFRAME_", "VRSTREAM_"):
+        value = os.environ.get(prefix + name)
+        if value is not None:
+            return value
+    return default
+
+
 @dataclass
 class Config:
     port: int = 8101
@@ -163,11 +172,11 @@ class Config:
     threads: int = 0                   # x264 threads, 0 = whatever x264 picks
     nice: int = 10                     # run ffmpeg at this nice level so a game keeps the CPU it needs
     adapt: bool = True                 # lower the bitrate once if the encoder cannot keep up
-    record: str = ""                   # "" = off, "auto" = ~/vrstream-recordings, or a directory
+    record: str = ""                   # "" = off, "auto" = ~/streamframe-recordings, or a directory
     record_time: int = 300             # seconds per file; the mp4 is only playable once closed
     record_limit: str = "20G"          # oldest files are pruned past this
-    shm: str = "/dev/shm/vrstream_frames"
-    hls_dir: str = "/tmp/vrstream-hls"
+    shm: str = "/dev/shm/streamframe_frames"
+    hls_dir: str = "/tmp/streamframe-hls"
     hls_time: int = 2
     hls_window: int = 8
     idle: float = 120.0
@@ -204,7 +213,7 @@ class Config:
         if not value or value in ("0", "off", "no"):
             return None
         if value == "auto":
-            return os.path.expanduser("~/vrstream-recordings")
+            return os.path.expanduser("~/streamframe-recordings")
         return os.path.expanduser(value)
 
     def record_limit_bytes(self) -> int:
@@ -524,7 +533,7 @@ class Encoder:
         return cmd + ["-f", "tee"] + maps + ["|".join(slaves)]
 
     def _progress_path(self) -> str:
-        return f"/tmp/vrstreamd-progress-{self.cfg.port}.log"
+        return f"/tmp/streamframe-progress-{self.cfg.port}.log"
 
     def encoder_fps(self) -> float:
         """fps reported by ffmpeg itself (-progress), good for sources we cannot sample."""
@@ -660,7 +669,7 @@ class Encoder:
         return cmd
 
     def _ffmpeg_log(self):
-        path = "/tmp/vrstreamd-ffmpeg.log"
+        path = "/tmp/streamframe-ffmpeg.log"
         try:
             if os.path.exists(path) and os.path.getsize(path) > 5 * 1024 * 1024:
                 os.unlink(path)                       # keep a restart loop from filling /tmp
@@ -924,7 +933,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if not given:
             for part in self.headers.get("Cookie", "").split(";"):
                 name, _, value = part.strip().partition("=")
-                if name == "vrstream_token":
+                if name == "streamframe_token":
                     given = value
         return given
 
@@ -1314,7 +1323,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         if token:
             self.send_header("Set-Cookie",
-                             f"vrstream_token={token}; Path=/; SameSite=Lax; HttpOnly")
+                             f"streamframe_token={token}; Path=/; SameSite=Lax; HttpOnly")
         self.end_headers()
         if not head:
             self._send(body)
@@ -1459,51 +1468,51 @@ def watchdog(cfg: Config, enc: Encoder, ring: FrameRing) -> None:
 
 def build_config(argv=None) -> Config:
     ap = argparse.ArgumentParser(description="VR compositor live stream (HLS + RTSP/WebRTC)")
-    ap.add_argument("--port", type=int, default=int(os.environ.get("VRSTREAM_PORT", 8101)))
-    ap.add_argument("--bind", default=os.environ.get("VRSTREAM_BIND", "0.0.0.0"))
+    ap.add_argument("--port", type=int, default=int(_env("PORT", 8101)))
+    ap.add_argument("--bind", default=_env("BIND", "0.0.0.0"))
     ap.add_argument("--fps", type=int, default=60)
     ap.add_argument("--bitrate", default="4M")
     ap.add_argument("--preset", default="ultrafast")
     ap.add_argument("--layout", default=None, choices=sorted(LAYOUTS),
                     help="mono-flat (default for the ring), passthrough (default for a device), "
                          "mono-round, stereo, mono-flat-right")
-    ap.add_argument("--gaze", default=os.environ.get("VRSTREAM_GAZE", "auto"),
+    ap.add_argument("--gaze", default=_env("GAZE", "auto"),
                     help='eye tracking: "auto" (when /dev/shm/eye-server.mmap exists), "off", or a path')
-    ap.add_argument("--gaze-shm", default=os.environ.get("VRSTREAM_GAZE_SHM",
+    ap.add_argument("--gaze-shm", default=_env("GAZE_SHM",
                                                          "/dev/shm/eye-server.mmap"))
-    ap.add_argument("--gaze-csv", default=os.environ.get("VRSTREAM_GAZE_CSV", ""),
+    ap.add_argument("--gaze-csv", default=_env("GAZE_CSV", ""),
                     help='append every gaze sample to a CSV: "auto" = <hls-dir>/gaze.csv, or a path')
-    ap.add_argument("--gaze-fov", default=os.environ.get("VRSTREAM_GAZE_FOV", "100x90"),
+    ap.add_argument("--gaze-fov", default=_env("GAZE_FOV", "100x90"),
                     help="horizontal x vertical degrees the flat image covers, for reticle placement")
-    ap.add_argument("--source", default=os.environ.get("VRSTREAM_SOURCE", "ring"),
+    ap.add_argument("--source", default=_env("SOURCE", "ring"),
                     help='"ring" = Vulkan layer shm (default), "v4l2:/dev/video99" = SteamVR '
                          'headset view, no layer needed')
     ap.add_argument("--vf", default=None, help="raw ffmpeg filter chain (overrides --layout)")
-    ap.add_argument("--threads", type=int, default=int(os.environ.get("VRSTREAM_THREADS", 0)),
+    ap.add_argument("--threads", type=int, default=int(_env("THREADS", 0)),
                     help="x264 threads (0 = auto)")
-    ap.add_argument("--nice", type=int, default=int(os.environ.get("VRSTREAM_NICE", 10)),
+    ap.add_argument("--nice", type=int, default=int(_env("NICE", 10)),
                     help="nice level for ffmpeg so a game keeps the CPU (0 = off)")
     ap.add_argument("--adapt", action=argparse.BooleanOptionalAction, default=True,
                     help="lower the bitrate once or twice when the encoder cannot keep up")
-    ap.add_argument("--record", default=os.environ.get("VRSTREAM_RECORD", ""),
-                    help="mp4 recording dir: a path, 'auto' (~/vrstream-recordings) or '' for off")
+    ap.add_argument("--record", default=_env("RECORD", ""),
+                    help="mp4 recording dir: a path, 'auto' (~/streamframe-recordings) or '' for off")
     ap.add_argument("--record-time", type=int, default=300,
                     help="seconds per mp4 chunk (each chunk is playable once closed)")
     ap.add_argument("--record-limit", default="20G",
                     help="prune the oldest chunks past this total, e.g. 20G")
-    ap.add_argument("--shm", default=os.environ.get("VRSTREAM_CAP_SHM", "/dev/shm/vrstream_frames"))
-    ap.add_argument("--hls-dir", default=os.environ.get("VRSTREAM_HLS", "/tmp/vrstream-hls"))
+    ap.add_argument("--shm", default=_env("CAP_SHM", "/dev/shm/streamframe_frames"))
+    ap.add_argument("--hls-dir", default=_env("HLS", "/tmp/streamframe-hls"))
     ap.add_argument("--hls-time", type=int, default=2)
     ap.add_argument("--hls-window", type=int, default=8)
-    ap.add_argument("--idle", type=float, default=float(os.environ.get("VRSTREAM_IDLE", 120)))
-    ap.add_argument("--audio", default=os.environ.get("VRSTREAM_AUDIO", ""),
+    ap.add_argument("--idle", type=float, default=float(_env("IDLE", 120)))
+    ap.add_argument("--audio", default=_env("AUDIO", ""),
                     help='system audio to mux in: "auto" (default sink monitor) or a pulse source name')
-    ap.add_argument("--rtsp-url", default=os.environ.get("VRSTREAM_RTSP", "rtsp://127.0.0.1:8554/vr"),
+    ap.add_argument("--rtsp-url", default=_env("RTSP", "rtsp://127.0.0.1:8554/vr"),
                     help="extra RTSP output for MediaMTX; empty disables it")
     ap.add_argument("--mediamtx-api", default="http://127.0.0.1:9997")
-    ap.add_argument("--webrtc-url", default=os.environ.get("VRSTREAM_WEBRTC", ""))
-    ap.add_argument("--token", default=os.environ.get("VRSTREAM_TOKEN", ""))
-    ap.add_argument("--settings", default=os.environ.get("VRSTREAM_SETTINGS", "auto"),
+    ap.add_argument("--webrtc-url", default=_env("WEBRTC", ""))
+    ap.add_argument("--token", default=_env("TOKEN", ""))
+    ap.add_argument("--settings", default=_env("SETTINGS", "auto"),
                     help='where settings changed from the player are stored: "auto" '
                          '(~/.config/streamframe/settings.json), a path, or "" for memory only')
     ap.add_argument("--no-settings", action="store_true",
@@ -1527,7 +1536,7 @@ def build_config(argv=None) -> Config:
 
 def acquire_lock(cfg: Config):
     """One daemon per machine: two would fight over the playlist and the encoder."""
-    path = os.path.join(tempfile.gettempdir(), f"vrstreamd-{cfg.port}.lock")
+    path = os.path.join(tempfile.gettempdir(), f"streamframe-{cfg.port}.lock")
     try:
         fh = open(path, "w")
         fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -1544,7 +1553,7 @@ def main(argv=None) -> int:
 
     lock = acquire_lock(cfg)
     if lock is None:
-        log("another vrstreamd already runs on this machine (lock held)")
+        log("another Stream Frame daemon already runs on this machine (lock held)")
         return 1
 
     clear_hls(cfg)
@@ -1585,7 +1594,7 @@ def main(argv=None) -> int:
     signal.signal(signal.SIGTERM, _bye)
     signal.signal(signal.SIGINT, _bye)
 
-    log(f"vrstreamd on {cfg.bind}:{cfg.port} | layout={cfg.layout} | hls={cfg.hls_dir} | "
+    log(f"streamframe on {cfg.bind}:{cfg.port} | layout={cfg.layout} | hls={cfg.hls_dir} | "
         f"{'rtsp=' + cfg.rtsp_url if cfg.rtsp_url else 'hls only'} | idle={cfg.idle:.0f}s")
     try:
         srv.serve_forever()

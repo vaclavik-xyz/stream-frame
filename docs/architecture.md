@@ -10,16 +10,16 @@ to the headset exactly as before, and a Vulkan layer copies what it was going to
                                 └───────────────┬───────────────┘
                         GPU blit → host-visible │  BGRA, 1440×1440 (per eye)
                                                 ▼
-                                  /dev/shm/vrstream_frames  (3-slot ring)
+                                  /dev/shm/streamframe_frames  (3-slot ring)
                                                 │  newest frame, no queue, no backpressure
                                                 ▼
                                  ┌──────────────────────────────┐
-                                 │ vrstreamd  (python, no deps)  │
+                                 │ streamframe (python, no deps) │
                                  │  ffmpeg: bgra → x264 → tee   │
                                  └───────┬──────────────┬───────┘
                                          │ HLS          │ RTSP (tcp, 127.0.0.1)
                                          ▼              ▼
-                              /tmp/vrstream-hls      mediamtx :8554
+                              /tmp/streamframe-hls      mediamtx :8554
                                     │                    │
                               HTTP :8101           WebRTC :8889 ──▶ browser (WHEP)
                                     │                    │
@@ -28,7 +28,7 @@ to the headset exactly as before, and a Vulkan layer copies what it was going to
 
 ## The ring buffer (the only contract between C and Python)
 
-The layer allocates `shm_open("/vrstream_frames")` sized `64 + 3 * (16 + w*h*4)`.
+The layer allocates `shm_open("/streamframe_frames")` sized `64 + 3 * (16 + w*h*4)`.
 
 Header (64 B, little endian):
 

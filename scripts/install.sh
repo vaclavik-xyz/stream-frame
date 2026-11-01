@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Install vrstream on a Linux box running SteamVR (Steam Frame / any PC VR).
-#   ./scripts/install.sh                 # full install into ~/vrstream
+# Install Stream Frame on a Linux box running SteamVR (Steam Frame / any PC VR).
+#   ./scripts/install.sh                 # full install into ~/stream-frame
 #   ./scripts/install.sh --dry-run       # show what would happen
 #   ./scripts/install.sh --no-mediamtx   # HLS only, no RTSP/WebRTC
 set -euo pipefail
 
-PREFIX="${HOME}/vrstream"
+PREFIX="${HOME}/stream-frame"
 PORT=8101
 WITH_MEDIAMTX=1
 DRY=0
@@ -62,24 +62,24 @@ say "registering the layer with the Vulkan loader"
 MANIFEST_DIR="${HOME}/.local/share/vulkan/implicit_layer.d"
 run install -d "$MANIFEST_DIR"
 if [[ $DRY -eq 1 ]]; then
-  echo "  + sed library_path -> $PREFIX/layer/libvrcap.so into $MANIFEST_DIR/vrstream.json"
+  echo "  + sed library_path -> $PREFIX/layer/libvrcap.so into $MANIFEST_DIR/streamframe.json"
 else
   sed "s|\"\./libvrcap\.so\"|\"${PREFIX}/layer/libvrcap.so\"|" \
-      "$REPO/layer/vrcap_layer.json" > "$MANIFEST_DIR/vrstream.json"
+      "$REPO/layer/vrcap_layer.json" > "$MANIFEST_DIR/streamframe.json"
 fi
 
 say "enabling capture inside SteamVR"
 DROPIN="${HOME}/.config/systemd/user/steamvr.service.d"
 run install -d "$DROPIN"
 if [[ $DRY -eq 1 ]]; then
-  echo "  + write 50-vrstream.conf (VRSTREAM_CAP=1, VRSTREAM_CAP_W=1440, VRSTREAM_CAP_FPS=60)"
+  echo "  + write 50-streamframe.conf (STREAMFRAME_CAP=1, STREAMFRAME_CAP_W=1440, STREAMFRAME_CAP_FPS=60)"
 else
-  cat > "$DROPIN/50-vrstream.conf" <<EOF
+  cat > "$DROPIN/50-streamframe.conf" <<EOF
 [Service]
-Environment=VRSTREAM_CAP=1
-Environment=VRSTREAM_CAP_W=1440
-Environment=VRSTREAM_CAP_FPS=60
-Environment=VRSTREAM_CAP_SHM=/vrstream_frames
+Environment=STREAMFRAME_CAP=1
+Environment=STREAMFRAME_CAP_W=1440
+Environment=STREAMFRAME_CAP_FPS=60
+Environment=STREAMFRAME_CAP_SHM=/streamframe_frames
 EOF
 fi
 
@@ -116,14 +116,14 @@ UNITS="${HOME}/.config/systemd/user"
 run install -d "$UNITS"
 if [[ $DRY -eq 0 ]]; then
   [[ -n "$PYTHON_BIN" ]] || { echo "python3 disappeared" >&2; exit 1; }
-  sed -e "s|@PYTHON@|$(esc "$PYTHON_BIN")|" -e "s|%h/vrstream|$(esc "$PREFIX")|g" \
-      "$REPO/systemd/vrstream.service" > "$UNITS/vrstream.service"
-  sed -e "s|%h/vrstream|$(esc "$PREFIX")|g" \
+  sed -e "s|@PYTHON@|$(esc "$PYTHON_BIN")|" -e "s|%h/stream-frame|$(esc "$PREFIX")|g" \
+      "$REPO/systemd/streamframe.service" > "$UNITS/streamframe.service"
+  sed -e "s|%h/stream-frame|$(esc "$PREFIX")|g" \
       "$REPO/systemd/mediamtx.service" > "$UNITS/mediamtx.service"
   # the port is an override, so the unit copy stays readable and re-installs cleanly
-  install -d "$UNITS/vrstream.service.d"
-  printf '[Service]\nEnvironment=VRSTREAM_PORT=%s\n' "$PORT" \
-      > "$UNITS/vrstream.service.d/10-port.conf"
+  install -d "$UNITS/streamframe.service.d"
+  printf '[Service]\nEnvironment=STREAMFRAME_PORT=%s\n' "$PORT" \
+      > "$UNITS/streamframe.service.d/10-port.conf"
 fi
 # user units die with the login session unless lingering is enabled — fatal for a headless box
 if [[ $DRY -eq 0 ]]; then
@@ -131,7 +131,7 @@ if [[ $DRY -eq 0 ]]; then
     || echo "  ! could not enable-linger; run: sudo loginctl enable-linger $(id -un)" >&2
 fi
 run systemctl --user daemon-reload
-run systemctl --user enable vrstream.service
+run systemctl --user enable streamframe.service
 [[ $WITH_MEDIAMTX -eq 1 ]] && run systemctl --user enable mediamtx.service
 
 cat <<EOF
@@ -140,7 +140,7 @@ Done. Next steps:
   1. restart SteamVR so the compositor picks up the layer:
        systemctl --user restart steamvr.service    (or just relaunch SteamVR)
   2. start the streamer:
-       systemctl --user start vrstream.service$([[ $WITH_MEDIAMTX -eq 1 ]] && echo " mediamtx.service")
+       systemctl --user start streamframe.service$([[ $WITH_MEDIAMTX -eq 1 ]] && echo " mediamtx.service")
   3. put the headset on and open:
        http://$(hostname -I 2>/dev/null | awk '{print $1}'):${PORT}/
   4. check health:

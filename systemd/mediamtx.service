@@ -1,13 +1,13 @@
 [Unit]
-Description=MediaMTX — RTSP/WebRTC server for vrstream
-After=network-online.target vrstream.service
+Description=MediaMTX — RTSP/WebRTC server for Stream Frame
+After=network-online.target streamframe.service
 Wants=network-online.target
-PartOf=vrstream.service
+PartOf=streamframe.service
 
 [Service]
 Type=simple
-WorkingDirectory=%h/vrstream
-ExecStart=%h/vrstream/bin/mediamtx %h/vrstream/config/mediamtx.yml
+WorkingDirectory=%h/stream-frame
+ExecStart=%h/stream-frame/bin/mediamtx %h/stream-frame/config/mediamtx.yml
 Restart=always
 RestartSec=3
 

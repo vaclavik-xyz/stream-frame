@@ -1,4 +1,4 @@
-PREFIX      ?= $(HOME)/vrstream
+PREFIX      ?= $(HOME)/stream-frame
 CC          ?= cc
 CFLAGS      ?= -O2 -fPIC -Wall -Wextra -shared
 VULKAN_INC  ?= /usr/include
@@ -42,7 +42,7 @@ lint:
 
 # ---------------------------------------------------------------- install
 install: install-layer install-units
-	@echo "done — enable with: systemctl --user enable --now vrstream.service"
+	@echo "done — enable with: systemctl --user enable --now streamframe.service"
 
 install-layer: layer
 	install -d $(PREFIX)/layer $(PREFIX)/bin
@@ -58,10 +58,10 @@ install-units:
 	install -m 644 server/vrstreamd.py $(PREFIX)/server/vrstreamd.py   # alias for existing units
 	install -m 644 server/web/index.html $(PREFIX)/server/web/index.html
 	install -m 644 config/mediamtx.yml $(PREFIX)/config/mediamtx.yml
-	install -m 644 systemd/vrstream.service $(PREFIX)/systemd/
+	install -m 644 systemd/streamframe.service $(PREFIX)/systemd/
 	install -m 644 systemd/mediamtx.service $(PREFIX)/systemd/
 	install -d $(HOME)/.config/systemd/user
-	install -m 644 systemd/vrstream.service $(HOME)/.config/systemd/user/
+	install -m 644 systemd/streamframe.service $(HOME)/.config/systemd/user/
 	install -m 644 systemd/mediamtx.service $(HOME)/.config/systemd/user/
 	systemctl --user daemon-reload
 	@echo "units installed — download mediamtx into $(PREFIX)/bin first (scripts/install.sh does it)"

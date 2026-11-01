@@ -4,7 +4,7 @@ The same encode that feeds the live stream can also write MP4 files. It is one m
 existing `tee`, so recording costs no extra CPU — only disk.
 
 ```bash
-python3 server/streamframe.py --record auto                 # ~/vrstream-recordings
+python3 server/streamframe.py --record auto                 # ~/stream-frame-recordings
 python3 server/streamframe.py --record /mnt/nvme/vr         # somewhere with room
 python3 server/streamframe.py --record /mnt/nvme/vr --record-time 600 --record-limit 50G
 ```
@@ -19,7 +19,7 @@ A chunk is closed every `--record-time` seconds (default 300) and is playable ri
 MP4 would keep its index at the end of the file, so a crash or a power cut would lose the whole session,
 not the last five minutes. Fragmented MP4 would in principle survive that, but the `movflags` do not
 survive the `segment` muxer — the files come out undecodable — so this is the honest trade: **at most one
-chunk is lost on a hard kill**, and a normal shutdown (`systemctl --user stop vrstream`) closes the open
+chunk is lost on a hard kill**, and a normal shutdown (`systemctl --user stop streamframe`) closes the open
 chunk properly.
 
 ## Watching it back
@@ -35,7 +35,7 @@ everything first. Names are checked: only `rec-*.mp4` inside the recording folde
 The newest chunk is marked `"open": true` while the encoder is running: its index is written only when it
 closes, so a download of that file will not play yet. Everything before it is finished and playable.
 
-Stopping the daemon closes the open chunk properly (`systemctl --user stop vrstream` sends EOF to ffmpeg
+Stopping the daemon closes the open chunk properly (`systemctl --user stop streamframe` sends EOF to ffmpeg
 and waits for it to write the index) — a hard kill or power cut is the only case where one chunk is lost.
 
 ## Disk budget
@@ -58,6 +58,6 @@ looking at second 12". Both files live on the headset's clock; nothing else has 
 - `record.enabled` is true and `record.files` stays at 0: ffmpeg is not running (`encoder: false`) — open
   the page or `curl /wake` first, since nothing is encoded while nobody watches.
 - The `segment` branch is `onfail=ignore` inside the tee: if the folder is not writable, the live stream
-  keeps working and only the recording is missing. The reason is in `/tmp/vrstreamd-ffmpeg.log`.
+  keeps working and only the recording is missing. The reason is in `/tmp/streamframe-ffmpeg.log`.
 - A chunk that is the newest in the folder while the encoder runs is still open (`"open": true`) and will
   not play; wait for it to close or stop the daemon.

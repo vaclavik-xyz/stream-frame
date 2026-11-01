@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end check of a running vrstream instance. Read-only: it starts nothing,
+# End-to-end check of a running Stream Frame instance. Read-only: it starts nothing,
 # it only asks the API and downloads one segment.
 #   ./scripts/smoke-test.sh [host] [port]
 set -uo pipefail
@@ -15,12 +15,12 @@ note() { printf '       %s\n' "$*"; }
 
 json() { python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('$1',''))" 2>/dev/null; }
 
-echo "vrstream smoke test against $BASE"
+echo "Stream Frame smoke test against $BASE"
 
 if body="$(curl -fsS -m 10 "$BASE/healthz" 2>/dev/null)"; then
   ok "daemon answers /healthz"
 else
-  bad "daemon does not answer /healthz — is vrstream.service running?"
+  bad "daemon does not answer /healthz — is streamframe.service running?"
   echo; echo "$fails check(s) failed"; exit 1
 fi
 
@@ -60,8 +60,8 @@ fi
 
 seg="$(printf '%s' "$playlist" | grep -v '^#' | grep '\.ts' | tail -1)"
 if [[ -n "$seg" ]]; then
-  code="$(curl -s -o /tmp/vrstream-smoke.ts -w '%{http_code}' -m 15 "$BASE/$seg")"
-  size="$(wc -c < /tmp/vrstream-smoke.ts 2>/dev/null || echo 0)"
+  code="$(curl -s -o /tmp/streamframe-smoke.ts -w '%{http_code}' -m 15 "$BASE/$seg")"
+  size="$(wc -c < /tmp/streamframe-smoke.ts 2>/dev/null || echo 0)"
   if [[ "$code" == "200" && "$size" -gt 1000 ]]; then
     ok "segment $seg downloads (${size} B)"
   else

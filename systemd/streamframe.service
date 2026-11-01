@@ -1,0 +1,20 @@
+[Unit]
+Description=Stream Frame — live VR compositor stream (HLS + RTSP/WebRTC)
+Documentation=https://github.com/vaclavik-xyz/stream-frame
+After=network-online.target steamvr.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/stream-frame/server
+ExecStart=@PYTHON@ %h/stream-frame/server/streamframe.py --bitrate 4M \
+  --record %h/recordings --record-time 300 --record-limit 20G --gaze-csv %h/recordings
+Restart=always
+RestartSec=3
+# give the encoder time to finish the segment and exit cleanly
+KillSignal=SIGTERM
+TimeoutStopSec=10
+Environment=STREAMFRAME_IDLE=120
+
+[Install]
+WantedBy=default.target

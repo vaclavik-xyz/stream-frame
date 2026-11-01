@@ -1,9 +1,9 @@
-# MediaMTX config for vrstream — low-latency fan-out of the RTSP push from ffmpeg.
+# MediaMTX config for Stream Frame — low-latency fan-out of the RTSP push from ffmpeg.
 # Docs: https://github.com/bluenviron/mediamtx
 logLevel: info
 logDestinations: [stdout]
 
-# --- RTSP ingest from vrstreamd (ffmpeg pushes rtsp://127.0.0.1:8554/vr) ---
+# --- RTSP ingest from the daemon (ffmpeg pushes rtsp://127.0.0.1:8554/vr) ---
 rtsp: yes
 rtspAddress: :8554
 rtspTransports: [tcp]          # tcp only: udp drops on busy wifi
@@ -15,7 +15,7 @@ webrtcLocalUDPAddress: :8189
 webrtcIPsFromInterfaces: yes
 webrtcAdditionalHosts: []
 
-# --- HLS is handled by vrstreamd itself; MediaMTX HLS stays off ---
+# --- HLS is handled by the daemon itself; MediaMTX HLS stays off ---
 hls: no
 
 api: yes
@@ -24,9 +24,9 @@ apiAddress: 127.0.0.1:9997      # readers count for the idle watchdog, local onl
 paths:
   vr:
     # Wake the encoder when a player connects and nobody has the web page open.
-    # vrstreamd starts ffmpeg on the first HTTP request, so a single ping is enough.
+    # the daemon starts ffmpeg on the first HTTP request, so a single ping is enough.
     runOnDemand: curl -s -m 6 -o /dev/null http://127.0.0.1:8101/wake
     # 0s = never close: the publisher is our own ffmpeg, and dropping it would kill the tee
-    # branch for the rest of the session (vrstreamd decides when to stop encoding).
+    # branch for the rest of the session (the daemon decides when to stop encoding).
     runOnDemandCloseAfter: 0s
   all_others:
