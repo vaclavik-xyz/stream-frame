@@ -9,8 +9,9 @@ headset. Here the HTML comes from this checkout (reload = see it), while `/statu
 `/api/settings` GET are proxied from a real daemon, so the overlays sit on a real picture.
 
 `POST /api/settings` is **not** proxied: it answers locally against an in-memory copy, so poking the panel
-while developing cannot change the stream someone is watching. Everything else that is not the page is
-passed through, with Range support, so the video element behaves as it does in the real thing.
+while developing cannot change the stream someone is watching. `POST /api/clip` is, because a clip can
+only be cut by the daemon that owns the segments. Everything else that is not the page is passed through,
+with Range support, so the video element behaves as it does in the real thing.
 """
 
 import argparse
@@ -84,6 +85,21 @@ class Dev(BaseHTTPRequestHandler):
         except Exception as err:                                   # upstream down
             self._json(502, {"error": f"upstream {self.upstream} unreachable: {err}"})
 
+    def _forward(self, method, url):
+        """Send the body on: a clip is cut by the real daemon or not at all."""
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        req = urllib.request.Request(url, data=body, method=method)
+        if self.headers.get("Content-Type"):
+            req.add_header("Content-Type", self.headers["Content-Type"])
+        try:
+            with urllib.request.urlopen(req, timeout=60) as up:
+                self._send(up.status, up.read(), up.headers.get("Content-Type", "application/json"))
+        except urllib.error.HTTPError as err:
+            self._send(err.code, err.read(), err.headers.get("Content-Type", "application/json"))
+        except Exception as err:
+            self._json(502, {"error": f"upstream {url} unreachable: {err}"})
+
     def _whep(self, method):
         """Proxy the WebRTC handshake too, so the dev page is same-origin and needs no CORS luck."""
         length = int(self.headers.get("Content-Length") or 0)
@@ -137,6 +153,8 @@ class Dev(BaseHTTPRequestHandler):
         path = urllib.parse.urlparse(self.path).path
         if path == "/vr/whep":
             return self._whep("POST")
+        if path == "/api/clip":
+            return self._forward("POST", self.upstream + self.path)
         if path != "/api/settings":
             return self._json(404, {"error": "the dev server only fakes /api/settings"})
         length = int(self.headers.get("Content-Length") or 0)
@@ -175,7 +193,7 @@ def main():
     Dev.whep = args.whep or f"http://{host}:8889/vr/whep"
     server = DevServer((args.bind, args.port), Dev)
     print(f"dev page  http://127.0.0.1:{args.port}/")
-    print(f"upstream  {Dev.upstream}   (POST /api/settings stays local)")
+    print(f"upstream  {Dev.upstream}   (POST /api/settings stays local, /api/clip is forwarded)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
