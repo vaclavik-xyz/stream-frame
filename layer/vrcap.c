@@ -465,8 +465,16 @@ VKAPI_ATTR VkResult VKAPI_CALL cap_QueuePresentKHR(VkQueue queue, const VkPresen
         double t = now_s();
         int fps = env_int("FPS", 60);
         if (fps < 1) fps = 60;
-        if (t - g_last_frame_t >= 1.0 / fps) {
-            g_last_frame_t = t;
+        // g_last_frame_t is a running deadline, not the previous grab. Measured
+        // against the previous grab at an 80 Hz present rate, a 60 fps target
+        // rejected every second frame (12.5 ms < 16.7 ms) and the stream ran at
+        // 40 fps. Advancing the deadline keeps the average at the cap and does
+        // not bank a burst after a stall.
+        double interval = 1.0 / fps;
+        if (g_last_frame_t == 0.0) g_last_frame_t = t;
+        if (t + 1e-9 >= g_last_frame_t) {
+            g_last_frame_t += interval;
+            if (g_last_frame_t <= t) g_last_frame_t = t + interval;
             // a present may carry several swapchains (main + small overlays);
             // we take the first large one we have registered
             for (uint32_t k = 0; k < info->swapchainCount; ++k) {
