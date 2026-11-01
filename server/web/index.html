@@ -925,6 +925,10 @@
   panelApply.onclick = applyPanel;
 
   document.addEventListener("keydown", (e) => {
+    // a shortcut must never fire into a field or over an open panel: "s" would close what you are editing
+    const field = e.target && /^(INPUT|SELECT|TEXTAREA)$/.test(e.target.tagName);
+    const layered = panel.classList.contains("on") || document.getElementById("qrbox").classList.contains("on");
+    if (e.key !== "Escape" && (field || layered)) return;
     if (e.key === "t") { hud.classList.toggle("on"); renderHud(); }
     if (e.key === "f") document.getElementById("fs").click();
     if (e.key === "m") modeBtn.click();

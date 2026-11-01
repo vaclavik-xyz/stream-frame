@@ -608,7 +608,11 @@ class Encoder:
         if cfg.verbose:
             log("encoder:", " ".join(cmd))
         fferr = self._ffmpeg_log()
-        proc = subprocess.Popen(self._nice(cmd, cfg.nice), stdin=subprocess.PIPE, stderr=fferr)
+        try:
+            proc = subprocess.Popen(self._nice(cmd, cfg.nice), stdin=subprocess.PIPE, stderr=fferr)
+        except BaseException:                 # ffmpeg missing: do not leak the log file on every retry
+            self._close_log(fferr)
+            raise
         with self._lock:
             self._proc = proc
         self.sessions += 1
@@ -619,8 +623,7 @@ class Encoder:
         finally:
             with self._lock:
                 self._proc = None
-            if fferr is not subprocess.DEVNULL:
-                fferr.close()
+            self._close_log(fferr)
 
     def _run_device(self, device: str) -> int:
         """ffmpeg reads the video node itself: no ring, no feeder, no raw frames in Python."""
@@ -658,16 +661,20 @@ class Encoder:
         finally:
             with self._lock:
                 self._proc = None
-            if fferr is not subprocess.DEVNULL:
-                fferr.close()
+            self._close_log(fferr)
 
-    @staticmethod
     @staticmethod
     def _nice(cmd: list[str], level: int) -> list[str]:
         """ffmpeg must lose every CPU race against the game it is recording."""
         if level and shutil.which("nice"):
             return ["nice", "-n", str(level)] + cmd
         return cmd
+
+    @staticmethod
+    def _close_log(stream) -> None:
+        # _ffmpeg_log hands back either a file or subprocess.DEVNULL, which is the int -3
+        if not isinstance(stream, int):
+            stream.close()
 
     def _ffmpeg_log(self):
         path = "/tmp/streamframe-ffmpeg.log"
@@ -798,13 +805,14 @@ class Runtime:
         self.notes: list[str] = []
 
     # -- gaze ---------------------------------------------------------------
-    def start_gaze(self) -> None:
+    def start_gaze(self) -> bool:
+        """True when samples will flow; the caller turns a False into an honest note, not a rollback."""
         self.stop_gaze()
         path = self.cfg.gaze_source()
         if not path:
             if self.cfg.gaze not in ("off", "", "0", "no"):
                 log(f"gaze: {self.cfg.gaze_shm} not present, reticle stays off")
-            return
+            return False
         src = EyeSource(path)
         rec = None
         csv_path = self.cfg.gaze_csv_path()
@@ -826,6 +834,7 @@ class Runtime:
                 rec = None
         # the request handlers read these two straight off the class; one writer keeps them honest
         Handler.gaze, Handler.gaze_rec = src, rec
+        return src is not None
 
     def stop_gaze(self) -> None:
         for obj in (Handler.gaze, Handler.gaze_rec):
@@ -861,7 +870,14 @@ class Runtime:
                     if not ok:
                         raise RuntimeError(why)
                 if "gaze" in values:
-                    self.start_gaze() if values["gaze"] else self.stop_gaze()
+                    if values["gaze"]:
+                        if not self.start_gaze():
+                            # the preference is real, the source is not there yet: say so instead of
+                            # claiming a reticle that nobody will see
+                            self.notes.append("gaze saved, but the runtime is not publishing eye data "
+                                              "right now — the reticle stays off until it does")
+                    else:
+                        self.stop_gaze()
             except (ValueError, RuntimeError):
                 prefs.restore(self.cfg, before)
                 if restarted:
