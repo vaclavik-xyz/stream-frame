@@ -12,8 +12,12 @@ rtspTransports: [tcp]          # tcp only: udp drops on busy wifi
 webrtc: yes
 webrtcAddress: :8889
 webrtcLocalUDPAddress: :8189
-webrtcIPsFromInterfaces: yes
-webrtcAdditionalHosts: []
+# Only the LAN address goes into the ICE candidates. Left to itself MediaMTX
+# offers the tailnet IPv6 address too, and browsers prefer IPv6 — so a Deck on
+# the same wifi was streaming through the tailnet, adding hops for no reason.
+# Remote viewers lose WebRTC and the page falls back to HLS on its own.
+webrtcIPsFromInterfaces: no
+webrtcAdditionalHosts: [192.168.0.59]
 
 # --- HLS is handled by the daemon itself; MediaMTX HLS stays off ---
 hls: no
