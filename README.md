@@ -108,6 +108,13 @@ Put the headset on, then:
 
 Details, manual install, environment variables: [docs/install.md](docs/install.md).
 
+## Working on the page
+
+`python3 scripts/devserver.py --upstream http://<headset>:8101` serves `server/web/index.html` from the
+checkout on port 8099 while proxying `/status`, the HLS segments and the WHEP handshake from a real daemon
+— so a CSS change is a reload, and the overlays sit on a real picture. `POST /api/settings` is answered
+locally: poking the panel in dev cannot restart the stream someone is watching.
+
 ## Endpoints
 
 | route | what |

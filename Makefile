@@ -1,4 +1,5 @@
 PREFIX      ?= $(HOME)/stream-frame
+UPSTREAM    ?= http://127.0.0.1:8101
 CC          ?= cc
 CFLAGS      ?= -O2 -fPIC -Wall -Wextra -shared
 VULKAN_INC  ?= /usr/include
@@ -32,6 +33,9 @@ $(LAYER_SRC): ;
 # ---------------------------------------------------------------- dev
 run:
 	$(PY) server/streamframe.py -v
+
+dev:                      # page from this checkout, picture and /status from UPSTREAM
+	$(PY) scripts/devserver.py --upstream $(UPSTREAM)
 
 test:
 	$(PY) -m pytest -q tests
