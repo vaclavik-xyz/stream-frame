@@ -12,6 +12,10 @@ All notable changes to this project are documented here. The format follows
   no error. The bare name is now read as the bare name.
 
 ### Added
+- The player page can be driven without a mouse: the d-pad walks a selection across the toolbar,
+  A presses, B steps back, up/down is volume, X clips. The 8BitDo Pro 2 on the Deck is seen twice
+  (itself and Steam's virtual pad), so presses are latched per action, and the poll runs on a
+  message-channel pump because a throttled overlay tab loses quick taps between timer ticks.
 - `deck-stream.sh start` now follows the session it is in: in Game Mode it opens the player page in
   Steam's own overlay browser (`steam://openurl/…`, HLS, no session switch), on the desktop it plays
   RTSP in mpv. `--browser` / `--mpv` force either route, and `status` reports which one is live by

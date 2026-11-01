@@ -236,6 +236,26 @@ launched, and this Deck's Steam refuses to launch the non-Steam shortcut (`scrip
 with "game configuration is not available". The browser route also cannot be closed from outside —
 it belongs to Steam, and killing `steamwebhelper` would take the UI with it.
 
+### Controls
+
+With a mouse the page just wants clicking. Without one — a controller in front of the sofa, or a
+keyboard — the same things are reachable:
+
+| | controller | keyboard |
+| --- | --- | --- |
+| walk the toolbar | d-pad ← → | ← → |
+| press the highlighted button | A | Enter |
+| step back / close | B | Esc |
+| volume | d-pad ↑ ↓ | ↑ ↓ |
+| clip the last 30 s | X | k |
+| settings | Y | s |
+| sound, stats, fullscreen, hide | A on the highlighted button | a, t, f, c |
+
+A container pad shows up twice — once itself, once as a virtual pad Steam Input mirrors it into — so
+presses are latched by action and released before they fire again. The poll runs on a message-channel
+pump rather than a timer: a background or overlay tab throttles `setInterval` to once a second and
+stops `requestAnimationFrame`, and a quick tap that lands between two polls looks like a dead button.
+
 ## Tested on
 
 | Machine | OS | What was verified |
