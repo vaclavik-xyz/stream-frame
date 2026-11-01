@@ -62,8 +62,8 @@ You cannot get both out of one protocol, so the encoder produces both. That is t
   is labelled as such.
 - **A player that can change the pipeline, carefully.** `--settings auto` lets the page change bitrate,
   fps, layout, threads, nice, adapt, recording and gaze. Every value is validated against a range, the
-  encoder is restarted and watched for eight seconds, and a setting that does not survive is rolled back
-  before it can be remembered. The file is written only after a value has actually run. See
+  encoder is restarted and watched — until its frame counter climbs, usually under a second — and a
+  setting that does not survive is rolled back before it can be remembered. The file is written only after a value has actually run. See
   [docs/settings.md](docs/settings.md).
 - **Its own Wi-Fi, if you want none of the network you are on.** SteamOS already runs a hotspot beside
   its station link; the player reads it and hands a phone two codes — one to join, one to open the

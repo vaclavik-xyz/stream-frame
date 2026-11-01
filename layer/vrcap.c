@@ -240,6 +240,14 @@ static int cap_setup(CapCtx *c, uint32_t srcW, uint32_t srcH, VkFormat fmt) {
     c->srcW = srcW; c->srcH = srcH; c->dstW = dstW; c->dstH = dstH; c->format = fmt;
     if (c->lin) return 1;
 
+    // The intermediate is never mapped and never sampled — blit destination, then a copy into a buffer —
+    // so OPTIMAL *should* be free. On the Frame it is not: layer/tiling_probe.c runs this exact path
+    // offscreen on the Adreno 750 and the optical result differs from LINEAR (118 of 4096 bytes on a
+    // flipped blit, 1536 unflipped), so the swap would put a corrupted band on the wire for a gain nobody
+    // has measured. LINEAR stays the default; VRSTREAM_CAP_TILING=optimal exists for the A/B on hardware
+    // where that driver bug is fixed.
+    const char *want_tiling = getenv("VRSTREAM_CAP_TILING");
+    int tiling_linear = !(want_tiling && strcmp(want_tiling, "optimal") == 0);
     VkImageCreateInfo ici = {0};
     ici.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
     ici.imageType = VK_IMAGE_TYPE_2D;
@@ -247,10 +255,11 @@ static int cap_setup(CapCtx *c, uint32_t srcW, uint32_t srcH, VkFormat fmt) {
     ici.extent.width = dstW; ici.extent.height = dstH; ici.extent.depth = 1;
     ici.mipLevels = 1; ici.arrayLayers = 1;
     ici.samples = VK_SAMPLE_COUNT_1_BIT;
-    ici.tiling = VK_IMAGE_TILING_LINEAR;
+    ici.tiling = tiling_linear ? VK_IMAGE_TILING_LINEAR : VK_IMAGE_TILING_OPTIMAL;
     ici.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     ici.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     if (c->pCreateImage(c->dev, &ici, NULL, &c->lin) != VK_SUCCESS) { logmsg("capture: createImage failed"); return 0; }
+    logmsg("capture: intermediate %ux%u %s", dstW, dstH, tiling_linear ? "linear" : "optimal");
 
     VkMemoryRequirements mr; c->pGetImageMemoryRequirements(c->dev, c->lin, &mr);
     VkMemoryAllocateInfo mai = {0};

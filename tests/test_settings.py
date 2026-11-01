@@ -4,6 +4,7 @@ import json
 import os
 import stat
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -111,6 +112,7 @@ class SteadyEncoder:
 
     def __init__(self):
         self.stops = 0
+        self.frames = 0
 
     def stop(self, wait: float = 0.0):
         self.stops += 1
@@ -119,6 +121,21 @@ class SteadyEncoder:
         pass
 
     def alive(self):
+        return True
+
+
+class ProducingEncoder(SteadyEncoder):
+    """Its frame counter climbs: proof enough, so a save must not wait out the deadline."""
+
+    def __init__(self):
+        super().__init__()
+        self.starts = 0
+
+    def ensure(self):
+        self.starts += 1
+
+    def alive(self):
+        self.frames += 5                      # every look sees fresh frames
         return True
 
 
@@ -177,3 +194,13 @@ def test_an_unwritable_recording_folder_is_refused_before_anything_moves(tmp_pat
     with pytest.raises(ValueError, match="not writable"):
         runtime.change({"record_time": 60})
     assert cfg.record_time == 300
+
+
+def test_a_pipeline_that_is_producing_is_believed_at_once(tmp_path):
+    """Frames rising are the proof; the deadline is only for a pipeline that stays silent."""
+    runtime, cfg = make_runtime(tmp_path, ProducingEncoder())
+    started = time.time()
+    result = runtime.change({"bitrate": "5M"})
+    took = time.time() - started
+    assert result["restarted"] is True and cfg.bitrate == "5M"
+    assert took < 3.0, f"a producing encoder should not be waited out ({took:.1f}s)"

@@ -26,8 +26,10 @@ for a second, WebRTC has to reconnect, the open MP4 chunk is closed properly and
 1. **Validate.** Ranges above, plus types. A value outside them is refused with a sentence that says
    which one and why — never clamped silently.
 2. **Apply** the values to the live config.
-3. **Prove it.** If the change touches the encoder, it is restarted and watched for eight seconds. A
-   command line that dies immediately is a bad setting, not a slow start.
+3. **Prove it.** If the change touches the encoder, it is restarted and watched: a command line that dies
+   immediately is a bad setting, not a slow start. The watch ends as soon as the frame counter climbs
+   twice — usually about half a second — so a good save feels like a save; the eight-second deadline is
+   only for a pipeline that stays up without producing anything.
 4. **Roll back** if it did not survive: the old values go back, the old pipeline is restarted, and the
    answer is `409` with the reason.
 5. **Persist** — but only what just ran. The file is written after step 3, so a value that failed can

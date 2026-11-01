@@ -898,14 +898,27 @@ class Runtime:
                     "notes": self.notes}
 
     def _restart_verified(self) -> tuple[bool, str]:
-        """Watch the new pipeline: one that dies at once is a bad setting, not a slow start."""
+        """Watch the new pipeline: one that dies at once is a bad setting, not a slow start.
+
+        Waiting out a fixed deadline made every save feel broken — eight seconds of nothing while the
+        encoder had been up for half a second. Frames are the proof that actually matters, so a pipeline
+        whose frame count rises twice is done being suspicious and returns at once; the deadline is only
+        the sad path, for a pipeline that stays alive without producing anything.
+        """
         self.enc.stop(wait=4.0)
         self.enc.ensure()
         deadline = time.time() + 8.0
+        rising, last = 0, self.enc.frames
         while time.time() < deadline:
-            time.sleep(0.25)
+            time.sleep(0.2)
             if not self.enc.alive():
                 return False, self.enc.last_error or "the encoder stopped right after the change"
+            if self.enc.frames > last:
+                rising, last = rising + 1, self.enc.frames
+                if rising >= 2:
+                    return True, ""
+            else:
+                rising = 0
         return (True, "") if self.enc.alive() else (False, "the encoder did not start")
 
 

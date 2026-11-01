@@ -106,6 +106,21 @@ Check that the segments really carry audio before blaming the player:
 ffprobe -v error -show_entries stream=codec_type,codec_name -of csv=p=0 /tmp/streamframe-hls/live5.ts
 ```
 
+## Someone suggested making the capture image tiled
+
+The intermediate image the layer blits into is `VK_IMAGE_TILING_LINEAR`, which looks wasteful: it is
+never mapped, so `OPTIMAL` should be free. It is not, on this hardware. `layer/tiling_probe.c` runs the
+layer's exact path offscreen — upload a pattern, blit it downsampled, copy it into a buffer — and compares
+the two tilings byte for byte:
+
+```bash
+gcc -O2 -o /tmp/tiling_probe layer/tiling_probe.c -lvulkan && /tmp/tiling_probe
+# Turnip Adreno (TM) 750, flipped blit: MISMATCH (118 of 4096 bytes differ)
+```
+
+A different picture is a corrupted one, and nobody has measured the gain, so `LINEAR` stays. The switch
+exists for the day the driver is fixed: `VRSTREAM_CAP_TILING=optimal` in the compositor's environment.
+
 ## `--source v4l2:/dev/video99` sees nothing
 
 The node is created by SteamVR's own `steamvr-v4l2cam.service` and exists only while it runs:
